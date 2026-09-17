@@ -1,0 +1,34 @@
+# macOS metadata
+.DS_Store
+._*
+.AppleDouble
+.LSOverride
+
+# Xcode build products and local state
+build/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+*.xccheckout
+*.xcscmblueprint
+
+# Swift Package Manager generated files
+.build/
+.swiftpm/
+
+# Distribution and debug artifacts
+*.ipa
+*.xcarchive
+*.dSYM
+*.dSYM.zip
+
+# Local configuration and signing credentials
+.env
+.env.*
+!.env.example
+*.p12
+*.p8
+*.mobileprovision
+*.provisionprofile
+
+# Keep shared Xcode project settings, asset catalogs, and Package.resolved tracked.
