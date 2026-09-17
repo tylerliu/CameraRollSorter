@@ -11,7 +11,7 @@ import SwiftUI
 struct CameraRollSorterApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            SequenceLibraryView()
         }
     }
 }
