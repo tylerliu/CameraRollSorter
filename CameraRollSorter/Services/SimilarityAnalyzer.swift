@@ -37,7 +37,11 @@ actor SimilarityAnalyzer {
             }
     }
 
-    func analyzeCandidates(_ candidates: [CandidateNeighborhood], progress: @escaping @MainActor @Sendable (Int, Int) -> Void) async throws -> SimilarityResult {
+    func analyzeCandidates(
+        _ candidates: [CandidateNeighborhood],
+        progress: @escaping @MainActor @Sendable (Int, Int) -> Void,
+        partialResults: @escaping @MainActor @Sendable ([SimilarityPair]) -> Void
+    ) async throws -> SimilarityResult {
         struct Edge: Hashable {
             let first: String
             let second: String
@@ -65,6 +69,8 @@ actor SimilarityAnalyzer {
             return value
         }
         var pairs: [SimilarityPair] = []
+        var pendingPairs: [SimilarityPair] = []
+        let partialResultsBatchSize = 5 // Delivery cadence only; groups have no size limit.
         await progress(0, edges.count)
         for (index, edge) in edges.enumerated() {
             try Task.checkCancellation()
@@ -73,10 +79,18 @@ actor SimilarityAnalyzer {
             if let first, let second {
                 var distance: Float = 0
                 try first.computeDistance(&distance, to: second)
-                pairs.append(SimilarityPair(first: edge.first, second: edge.second, distance: distance))
+                let pair = SimilarityPair(first: edge.first, second: edge.second, distance: distance)
+                pairs.append(pair)
+                pendingPairs.append(pair)
+                // Keep the UI responsive while avoiding a main-actor callback for every edge.
+                if pendingPairs.count >= partialResultsBatchSize {
+                    await partialResults(pendingPairs)
+                    pendingPairs.removeAll(keepingCapacity: true)
+                }
             }
             if index % 10 == 0 || index + 1 == edges.count { await progress(index + 1, edges.count) }
         }
+        if !pendingPairs.isEmpty { await partialResults(pendingPairs) }
         return SimilarityResult(pairs: pairs, unavailable: unavailable.count)
     }
 }

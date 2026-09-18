@@ -1,6 +1,21 @@
+import Foundation
 import Photos
 import Observation
 import UIKit
+
+enum PhotoLibraryDeletionError: LocalizedError {
+    case writeAccessRequired
+    case changeRejected
+
+    var errorDescription: String? {
+        switch self {
+        case .writeAccessRequired:
+            return "Photo access does not allow changes. Grant full or limited read-write access and try again."
+        case .changeRejected:
+            return "Photos did not accept the deletion request."
+        }
+    }
+}
 
 @MainActor @Observable
 final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
@@ -52,10 +67,18 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
             summary = "\(result.count) accessible photos across your library. \(result.missingDates) accessible photos have no capture date and cannot be grouped."
             do {
                 let token = revision
-                let scores = try await analyzer.analyzeCandidates(result.groups) { [self] completed, total in
-                    guard self.revision == token else { return }
-                    self.progress = "Comparing photos: \(completed) of \(total) pairs"
-                }
+                let scores = try await analyzer.analyzeCandidates(
+                    result.groups,
+                    progress: { [self] completed, total in
+                        guard self.revision == token else { return }
+                        self.progress = "Comparing photos: \(completed) of \(total) pairs"
+                    },
+                    partialResults: { [self] newPairs in
+                        guard self.revision == token else { return }
+                        self.pairs.append(contentsOf: newPairs)
+                        self.applyThreshold()
+                    }
+                )
                 guard !Task.isCancelled else { return }
                 pairs = scores.pairs
                 summary += " \(scores.unavailable) candidate photos unavailable locally."
@@ -78,6 +101,33 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
         let ids = Set(group.photos.map(\.id))
         let candidates = pairs.filter { ids.contains($0.first) && ids.contains($0.second) }
         return SimilarityGrouping.minimumSpanningTree(photos: group.photos, pairs: candidates, threshold: threshold)
+    }
+
+    @discardableResult
+    func deletePhotos(_ identifiers: Set<String>) async throws -> Int {
+        guard authorization == .authorized || authorization == .limited else {
+            throw PhotoLibraryDeletionError.writeAccessRequired
+        }
+
+        let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: Array(identifiers), options: nil)
+        var assets: [PHAsset] = []
+        fetchResult.enumerateObjects { asset, _, _ in assets.append(asset) }
+        guard !assets.isEmpty else { return 0 }
+
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            PHPhotoLibrary.shared().performChanges({
+                PHAssetChangeRequest.deleteAssets(assets as NSArray)
+            }) { success, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else if success {
+                    continuation.resume()
+                } else {
+                    continuation.resume(throwing: PhotoLibraryDeletionError.changeRejected)
+                }
+            }
+        }
+        return assets.count
     }
 
     nonisolated func photoLibraryDidChange(_ changeInstance: PHChange) {

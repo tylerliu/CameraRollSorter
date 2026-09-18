@@ -2,7 +2,7 @@
 
 ## Current implementation policy (updated from user direction)
 
-The user superseded the time-only review fallback below: display similarity groups only. Scan all accessible image metadata. For each photo, test only up to five nearest temporal neighbors, strictly less than 24 hours away. Accepted Vision-distance edges (default threshold 0.50, tunable) form connected groups of unrestricted size. No group member is a reference image. Group detail shows the minimum spanning tree over accepted measured candidate edges and their raw distances. Transitive membership is explicitly intended; endpoints need not directly match. Preserve the older notes below as historical product context where they do not conflict with this policy.
+The user superseded the time-only review fallback below: display similarity groups only. Scan all accessible image metadata. For each photo, test only up to five nearest temporal neighbors, strictly less than 24 hours away. Accepted Vision-distance edges (default threshold 0.50, tunable) form connected groups of unrestricted size. No group member is a reference image. Group detail shows the minimum spanning tree over accepted measured candidate edges and their raw distances. Transitive membership is explicitly intended; endpoints need not directly match. The chooser now supports a burst-style keep list and a lowest-distance pair review; explicit deletions use PhotoKit and go to Recently Deleted. Preserve the older notes below as historical product context where they do not conflict with this policy.
 
 ## Objective
 

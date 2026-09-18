@@ -1,6 +1,6 @@
 # Camera Roll Sorter
 
-A read-only iPhone prototype for finding nearby photos and displaying raw visual similarity scores. See APP_CONTEXT.md for the original product brief; the candidate policy below reflects the latest implementation direction.
+A prototype for finding nearby photos, displaying raw visual similarity scores, and reviewing which group members to keep. See APP_CONTEXT.md for the original product brief; the candidate policy below reflects the latest implementation direction.
 
 ## Current behavior
 
@@ -10,8 +10,10 @@ A read-only iPhone prototype for finding nearby photos and displaying raw visual
 - The scan compares each unique nearest-neighbor candidate pair using Vision. Pairs with distance at or below the persisted threshold (default **0.50**) become links; connected links form disjoint similarity groups, with no five-photo size limit. Isolated photos are omitted from similarity results. A chain can connect endpoints that were not directly compared or are not directly similar.
 - Review settings offers a distance slider (0–2 in 0.05 steps). Lower is stricter. Closing settings regroups the retained scores without rerunning Vision. This is an experimental distance cutoff, not a calibrated confidence.
 - Only similarity groups are displayed; time is solely an internal candidate filter. There is no reference image in a group. Opening a group displays a minimum spanning tree of its accepted measured links, ordered by distance. A group of N photos has N−1 displayed links, chosen by Kruskal’s algorithm with deterministic tie-breaking. Untested pairs are never assumed to match. Photos remain chronological.
+- Groups are published incrementally as measured pairs arrive, so confirmed groups can be reviewed while the remaining candidates are still being scanned.
 - Displays **Vision revision 2 distance** directly. Lower is closer; this is not a confidence percentage, quality rating, or validated match threshold.
-- Uses current local previews with normalized orientation and scale-fit preprocessing. No automatic iCloud downloads or photo-library mutations occur.
+- Group detail opens a chooser with a burst-style keep list and a pair-review mode. Pair review starts with the lowest stored distances and offers keep first, keep second, or keep both. The keep list is session-local until the user confirms a deletion.
+- Uses current local previews with normalized orientation and scale-fit preprocessing. No automatic iCloud downloads occur. Deletion only happens after an explicit chooser confirmation and uses PhotoKit so iOS places selected assets in Recently Deleted.
 
 The simulator-only pixel-distance fallback and time-only group UI have been removed. Vision failures are shown as errors; no replacement or fabricated scores are shown. The earlier simulator Espresso failure may still occur. Library-wide metadata discovery and candidate image analysis run automatically, with pair-count progress. A bounded 256-entry feature-print cache is used during each scan, and measured pair distances are retained for threshold tuning until the next scan. There is no persistent analysis cache yet.
 
@@ -26,7 +28,7 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild \
   -derivedDataPath /tmp/CameraRollSorter-build CODE_SIGNING_ALLOWED=NO build
 ```
 
-Source folders: `App` for the entry point, `Models` for candidate selection, `Services` for PhotoKit and Vision, and `Features` for the library, comparison screen, and settings. Xcode includes files under the synchronized source folder automatically.
+Source folders: `App` for the entry point, `Models` for candidate selection, `Services` for PhotoKit and Vision, and `Features` for the library, comparison screen, chooser, and settings. Xcode includes files under the synchronized source folder automatically.
 
 ## Grouping checks
 
@@ -37,4 +39,4 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcrun swiftc \
 /tmp/CameraRollSorter-grouping-checks
 ```
 
-Checks cover the strict one-day boundary, nearest-five selection in both time directions, old photos, quick-shot sequences, chronological display, deterministic ties, candidate limits, threshold boundaries, connected groups larger than five, rejected bridges, invalid scores, deterministic component ordering, minimum spanning trees, cycle removal, and duplicate-edge handling. Physical-device checks of real photo scores, permission changes, cloud-only photos, and full-library performance remain required. Keeper selection and saved review decisions are future work.
+Checks cover the strict one-day boundary, nearest-five selection in both time directions, old photos, quick-shot sequences, chronological display, deterministic ties, candidate limits, threshold boundaries, connected groups larger than five, rejected bridges, invalid scores, deterministic component ordering, minimum spanning trees, cycle removal, and duplicate-edge handling. Physical-device checks of real photo scores, permission changes, cloud-only photos, deletion permissions, Recently Deleted behavior, and full-library performance remain required. Review decisions are local to the chooser session and are not persisted.

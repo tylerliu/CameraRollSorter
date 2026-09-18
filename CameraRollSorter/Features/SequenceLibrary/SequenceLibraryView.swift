@@ -21,8 +21,9 @@ struct SequenceLibraryView: View {
                 }
             }
             .sheet(isPresented: $showsSettings, onDismiss: library.applyThreshold) { ReviewSettingsView() }
-            .sheet(isPresented: $showsLimitedPicker, onDismiss: library.refresh) {
-                LimitedLibraryPicker { showsLimitedPicker = false }
+            .background {
+                LimitedLibraryPicker(isPresented: $showsLimitedPicker, onFinished: library.refresh)
+                    .frame(width: 0, height: 0)
             }
         }
         .task { library.refresh() }
@@ -40,7 +41,7 @@ struct SequenceLibraryView: View {
                     Button("Choose accessible photos") { showsLimitedPicker = true }
                 }
                 Button("Change access in Settings") { openSettings() }
-                Text("Your photo library is not modified. Comparisons use local previews only.")
+                Text("Comparisons use local previews only. Nothing is changed unless you confirm a deletion in the chooser.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section {
@@ -52,14 +53,16 @@ struct SequenceLibraryView: View {
                 if library.isScanning {
                     ProgressView(library.progress)
                 }
-                if library.hasScanned {
-                    Text(library.summary).font(.caption).foregroundStyle(.secondary)
-                    if library.groups.isEmpty {
+                if library.hasScanned || !library.groups.isEmpty {
+                    if !library.summary.isEmpty {
+                        Text(library.summary).font(.caption).foregroundStyle(.secondary)
+                    }
+                    if library.hasScanned && library.groups.isEmpty {
                         ContentUnavailableView("No groups found", systemImage: "photo.stack", description: Text(library.analysisError == nil ? "No measured matches met the distance threshold. Try adjusting it in settings. Photos unavailable locally cannot be matched." : "Similarity analysis did not finish. Pull to refresh to retry."))
                     }
                     ForEach(library.groups) { group in
                         NavigationLink {
-                            SimilarityView(sequence: group, measuredPairs: library.scores(for: group))
+                            SimilarityView(sequence: group, measuredPairs: library.scores(for: group), library: library)
                         } label: {
                             HStack {
                                 PhotoThumbnail(identifier: group.photos[0].id, size: 72)
@@ -74,7 +77,6 @@ struct SequenceLibraryView: View {
                     }
                 }
             }
-            .id(library.revision)
         }
         .refreshable { library.refresh() }
     }
@@ -90,7 +92,7 @@ struct SequenceLibraryView: View {
             case .restricted:
                 Text("Photo access is restricted on this device. Review device restrictions to enable it.")
             default:
-                Text("Choose full access or select specific photos in the system prompt. We use capture times and on-device visual comparisons to help you review nearby shots. Your photos will not be changed.")
+                Text("Choose full access or select specific photos in the system prompt. We use capture times and on-device visual comparisons to help you review nearby shots. Deletions require a separate confirmation and go to Recently Deleted.")
             }
         } actions: {
             if library.authorization == .notDetermined {

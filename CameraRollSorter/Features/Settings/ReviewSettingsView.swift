@@ -27,7 +27,7 @@ struct ReviewSettingsView: View {
                         .foregroundStyle(.secondary)
                 }
                 Section("Photo library") {
-                    Text("Scores use Vision and local previews without automatic iCloud downloads. Your photos are not modified.")
+                    Text("Scores use Vision and local previews without automatic iCloud downloads. The chooser can move rejected photos to Recently Deleted after you confirm.")
                 }
             }
             .navigationTitle("Review settings")
