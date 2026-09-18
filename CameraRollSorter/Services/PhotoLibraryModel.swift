@@ -35,6 +35,7 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
     var summary = ""
     var revision = UUID()
     private var scanTask: Task<Void, Never>?
+    private var candidateReconciliationTask: Task<Void, Never>?
     private let scanner = SequenceScanner()
     private var observing = false
     var canRead: Bool { authorization == .authorized || authorization == .limited }
@@ -91,13 +92,19 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
                     },
                     partialResults: { [self] newPairs in
                         guard self.revision == token else { return }
-                        self.pairs.append(contentsOf: newPairs)
+                        let currentIDs = Set(self.photos.map(\.id))
+                        self.pairs.append(contentsOf: newPairs.filter {
+                            currentIDs.contains($0.first) && currentIDs.contains($0.second)
+                        })
                         self.applyThreshold()
                     }
                 )
                 guard !Task.isCancelled else { return }
-                pairs = scores.pairs
-                unavailablePhotoIDs = scores.unavailableIDs
+                let currentIDs = Set(photos.map(\.id))
+                pairs = scores.pairs.filter {
+                    currentIDs.contains($0.first) && currentIDs.contains($0.second)
+                }
+                unavailablePhotoIDs = scores.unavailableIDs.intersection(currentIDs)
                 updateSummary()
                 applyThreshold()
             } catch {
@@ -148,7 +155,87 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
                 }
             }
         }
+        removeFromCurrentResults(Set(assets.map(\.localIdentifier)))
         return assets.count
+    }
+
+    private func removeFromCurrentResults(_ identifiers: Set<String>) {
+        guard !identifiers.isEmpty else { return }
+        let previousCount = photos.count
+        photos.removeAll { identifiers.contains($0.id) }
+        let removedDatedPhotos = previousCount - photos.count
+        accessiblePhotoCount = max(0, accessiblePhotoCount - removedDatedPhotos)
+        pairs.removeAll { identifiers.contains($0.first) || identifiers.contains($0.second) }
+        unavailablePhotoIDs.subtract(identifiers)
+        updateSummary()
+        // Removing a bridge can split one similarity component into several.
+        // Rebuild immediately from the surviving measured edges.
+        applyThreshold()
+        progress = "Library updated"
+        scheduleCandidateReconciliation()
+    }
+
+    private func scheduleCandidateReconciliation() {
+        candidateReconciliationTask?.cancel()
+        candidateReconciliationTask = Task { [weak self] in
+            guard let self else { return }
+            while self.isScanning {
+                try? await Task.sleep(for: .milliseconds(100))
+                guard !Task.isCancelled else { return }
+            }
+            await self.reconcileCurrentCandidateGraph()
+        }
+    }
+
+    private func reconcileCurrentCandidateGraph() async {
+        guard canRead, !isScanning else { return }
+        let orderedComparisons = SequenceGrouping.comparisons(SequenceGrouping.groups(photos))
+        let validComparisons = Set(orderedComparisons)
+        pairs.removeAll { !validComparisons.contains(CandidateComparison($0.first, $0.second)) }
+        applyThreshold()
+
+        let measured = Set(pairs.map { CandidateComparison($0.first, $0.second) })
+        let missingComparisons = orderedComparisons.filter { !measured.contains($0) }
+        guard !missingComparisons.isEmpty else { return }
+
+        let token = UUID()
+        revision = token
+        isScanning = true
+        hasScanned = false
+        do {
+            let scores = try await analyzer.analyzeComparisons(
+                missingComparisons,
+                progress: { [weak self] completed, total in
+                    guard let self, self.revision == token else { return }
+                    self.progress = "Comparing library changes: \(completed) of \(total) pairs"
+                },
+                partialResults: { [weak self] newPairs in
+                    guard let self, self.revision == token else { return }
+                    let currentIDs = Set(self.photos.map(\.id))
+                    self.pairs.append(contentsOf: newPairs.filter {
+                        currentIDs.contains($0.first) && currentIDs.contains($0.second)
+                    })
+                    self.applyThreshold()
+                }
+            )
+            guard revision == token else { return }
+            let currentIDs = Set(photos.map(\.id))
+            pairs.append(contentsOf: scores.pairs.filter { score in
+                currentIDs.contains(score.first) && currentIDs.contains(score.second)
+                    && !pairs.contains { $0.id == score.id }
+            })
+            unavailablePhotoIDs.formUnion(scores.unavailableIDs.intersection(currentIDs))
+            updateSummary()
+            applyThreshold()
+        } catch is CancellationError {
+            return
+        } catch {
+            guard revision == token else { return }
+            analysisError = "Similarity analysis failed: \(error.localizedDescription). Pull to refresh to retry."
+        }
+        progress = "Library updated"
+        isScanning = false
+        hasScanned = true
     }
 
     nonisolated func photoLibraryDidChange(_ changeInstance: PHChange) {
@@ -217,10 +304,12 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
                 }
             )
             guard revision == token else { return }
+            let currentIDs = Set(photos.map(\.id))
             pairs.append(contentsOf: scores.pairs.filter { score in
-                !pairs.contains { $0.id == score.id }
+                currentIDs.contains(score.first) && currentIDs.contains(score.second)
+                    && !pairs.contains { $0.id == score.id }
             })
-            unavailablePhotoIDs.formUnion(scores.unavailableIDs)
+            unavailablePhotoIDs.formUnion(scores.unavailableIDs.intersection(currentIDs))
             updateSummary()
             applyThreshold()
         } catch is CancellationError {
