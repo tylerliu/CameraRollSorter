@@ -20,12 +20,17 @@ struct PhotoChooserView: View {
     @State private var pairIndex = 0
     @State private var isDeleting = false
     @State private var deletionError: String?
+    @State private var centeredPhotoID: String?
+    @State private var infoPhotoID: String?
 
     init(sequence: PhotoSequence, measuredPairs: [SimilarityPair], library: PhotoLibraryModel) {
         self.sequence = sequence
         self.measuredPairs = measuredPairs
         self.library = library
         _keptIDs = State(initialValue: Set(sequence.photos.map(\.id)))
+        // Set after the filmstrip's first layout so scrollPosition performs an
+        // actual initial scroll instead of treating the value as already applied.
+        _centeredPhotoID = State(initialValue: nil)
     }
 
     private var orderedPairs: [SimilarityPair] {
@@ -67,63 +72,93 @@ struct PhotoChooserView: View {
         } message: {
             Text(deletionError ?? "Try again after checking photo access.")
         }
+        .sheet(isPresented: infoSheetBinding) {
+            if let infoPhotoID { PhotoInfoView(identifier: infoPhotoID) }
+        }
     }
 
     private var burstContent: some View {
-        ScrollView {
-            VStack(spacing: 16) {
-                Text("Select the photos you want to leave in your library. Unselected photos will be moved to Recently Deleted when you apply the change.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
+        GeometryReader { geometry in
+            VStack(spacing: 10) {
                 if !sequence.photos.isEmpty {
                     let preview = sequence.photos[min(burstPreviewIndex, sequence.photos.count - 1)]
-                    PhotoThumbnail(identifier: preview.id, size: 300)
-                    Text("Photo \(position(preview.id))")
-                        .font(.headline)
+                    ZoomablePhotoView(identifier: preview.id) {
+                        infoPhotoID = preview.id
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                    HStack {
+                        Text("\(position(preview.id)) of \(sequence.photos.count)")
+                        Spacer()
+                        Button {
+                            toggle(preview.id)
+                        } label: {
+                            Label(keptIDs.contains(preview.id) ? "Kept" : "Not kept", systemImage: keptIDs.contains(preview.id) ? "checkmark.circle.fill" : "circle")
+                        }
+                        .foregroundStyle(keptIDs.contains(preview.id) ? Color.accentColor : Color.red)
+                        .accessibilityHint("Toggles whether this photo will be kept")
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .padding(.horizontal)
+
+                    filmstrip(width: geometry.size.width)
+
+                    Text("Pinch to zoom · swipe up for info")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
+            }
+            .padding(.vertical, 8)
+        }
+    }
 
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(alignment: .top, spacing: 12) {
-                        ForEach(Array(sequence.photos.enumerated()), id: \.element.id) { index, photo in
-                            VStack(spacing: 5) {
-                                Button {
-                                    burstPreviewIndex = index
-                                } label: {
-                                    PhotoThumbnail(identifier: photo.id, size: 76)
-                                        .overlay {
-                                            if index == burstPreviewIndex {
-                                                RoundedRectangle(cornerRadius: 8)
-                                                    .stroke(.tint, lineWidth: 3)
-                                            }
-                                        }
-                                }
-                                .buttonStyle(.plain)
-
-                                Button {
-                                    toggle(photo.id)
-                                } label: {
-                                    Image(systemName: keptIDs.contains(photo.id) ? "checkmark.circle.fill" : "circle")
-                                        .font(.title2)
-                                        .symbolRenderingMode(.palette)
-                                        .foregroundStyle(keptIDs.contains(photo.id) ? Color.white : Color.secondary, keptIDs.contains(photo.id) ? Color.accentColor : Color.secondary.opacity(0.25))
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityLabel("Photo \(index + 1), \(keptIDs.contains(photo.id) ? "kept" : "marked for deletion")")
+    private func filmstrip(width: CGFloat) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            LazyHStack(spacing: 7) {
+                ForEach(Array(sequence.photos.enumerated()), id: \.element.id) { index, photo in
+                    PhotoThumbnail(identifier: photo.id, size: 54)
+                        .overlay(alignment: .bottomTrailing) {
+                            Image(systemName: keptIDs.contains(photo.id) ? "checkmark.circle.fill" : "circle")
+                                .symbolRenderingMode(.palette)
+                                .foregroundStyle(.white, keptIDs.contains(photo.id) ? Color.accentColor : Color.black.opacity(0.45))
+                                .padding(3)
+                        }
+                        .overlay {
+                            if index == burstPreviewIndex {
+                                RoundedRectangle(cornerRadius: 8).stroke(.tint, lineWidth: 3)
                             }
                         }
-                    }
-                    .padding(.horizontal, 2)
+                        .id(photo.id)
+                        .scrollTransition(.interactive, axis: .horizontal) { content, phase in
+                            content.scaleEffect(phase.isIdentity ? 1.08 : 0.9)
+                        }
+                        .onTapGesture {
+                            centeredPhotoID = photo.id
+                            burstPreviewIndex = index
+                        }
                 }
-
-                Text("Tap a thumbnail to inspect it. Use the checkmark to keep or unkeep it.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding()
+            .scrollTargetLayout()
         }
+        .contentMargins(.horizontal, max(0, (width - 54) / 2), for: .scrollContent)
+        .scrollTargetBehavior(.viewAligned(limitBehavior: .always))
+        .scrollPosition(id: $centeredPhotoID, anchor: .center)
+        .frame(height: 68)
+        .task(id: sequence.id) {
+            guard centeredPhotoID == nil, let firstID = sequence.photos.first?.id else { return }
+            await Task.yield()
+            centeredPhotoID = firstID
+        }
+        .onChange(of: centeredPhotoID) { _, identifier in
+            guard let identifier,
+                  let index = sequence.photos.firstIndex(where: { $0.id == identifier }) else { return }
+            burstPreviewIndex = index
+        }
+        .onChange(of: burstPreviewIndex) { _, index in
+            guard sequence.photos.indices.contains(index) else { return }
+            centeredPhotoID = sequence.photos[index].id
+        }
+        .accessibilityLabel("Photo filmstrip")
     }
 
     @ViewBuilder
@@ -261,6 +296,13 @@ struct PhotoChooserView: View {
         Binding(
             get: { deletionError != nil },
             set: { if !$0 { deletionError = nil } }
+        )
+    }
+
+    private var infoSheetBinding: Binding<Bool> {
+        Binding(
+            get: { infoPhotoID != nil },
+            set: { if !$0 { infoPhotoID = nil } }
         )
     }
 
