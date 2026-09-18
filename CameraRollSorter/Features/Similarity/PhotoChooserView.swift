@@ -40,39 +40,32 @@ struct PhotoChooserView: View {
     private var markedForDeletion: Set<String> { allIDs.subtracting(keptIDs) }
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                Picker("Review mode", selection: $mode) {
-                    ForEach(Mode.allCases) { mode in
-                        Text(mode.rawValue).tag(mode)
-                    }
+        VStack(spacing: 0) {
+            Picker("Review mode", selection: $mode) {
+                ForEach(Mode.allCases) { mode in
+                    Text(mode.rawValue).tag(mode)
                 }
-                .pickerStyle(.segmented)
-                .padding(.horizontal)
-                .padding(.vertical, 12)
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal)
+            .padding(.vertical, 12)
 
-                Group {
-                    switch mode {
-                    case .burst:
-                        burstContent
-                    case .pairs:
-                        pairContent
-                    }
+            Group {
+                switch mode {
+                case .burst:
+                    burstContent
+                case .pairs:
+                    pairContent
                 }
             }
-            .safeAreaInset(edge: .bottom) { actionBar }
-            .navigationTitle("Choose photos")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") { dismiss() }
-                }
-            }
-            .alert("Couldn’t move photos", isPresented: deletionAlertBinding) {
-                Button("OK", role: .cancel) { deletionError = nil }
-            } message: {
-                Text(deletionError ?? "Try again after checking photo access.")
-            }
+        }
+        .safeAreaInset(edge: .bottom) { actionBar }
+        .navigationTitle("Choose photos")
+        .navigationBarTitleDisplayMode(.inline)
+        .alert("Couldn’t move photos", isPresented: deletionAlertBinding) {
+            Button("OK", role: .cancel) { deletionError = nil }
+        } message: {
+            Text(deletionError ?? "Try again after checking photo access.")
         }
     }
 

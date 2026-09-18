@@ -28,7 +28,7 @@ struct SequenceLibraryView: View {
         }
         .task { library.refresh() }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { library.refresh() }
+            if phase == .active { Task { await library.syncLibrary() } }
         }
     }
 
@@ -62,7 +62,7 @@ struct SequenceLibraryView: View {
                     }
                     ForEach(library.groups) { group in
                         NavigationLink {
-                            SimilarityView(sequence: group, measuredPairs: library.scores(for: group), library: library)
+                            PhotoChooserView(sequence: group, measuredPairs: library.scores(for: group), library: library)
                         } label: {
                             HStack {
                                 PhotoThumbnail(identifier: group.photos[0].id, size: 72)
@@ -70,7 +70,7 @@ struct SequenceLibraryView: View {
                                     Text("\(group.photos.count) similar photos")
                                     Text(group.photos[0].date, format: .dateTime.month().day().hour().minute())
                                         .font(.caption).foregroundStyle(.secondary)
-                                    Text("Compare visual similarity").font(.caption)
+                                    Text("Choose photos to keep").font(.caption)
                                 }
                             }
                         }

@@ -30,6 +30,8 @@ let forward = SequenceGrouping.groups(ties).map { neighbors($0) }
 let backward = SequenceGrouping.groups(ties.reversed()).map { neighbors($0) }
 check(forward == backward, "Equal timestamps have deterministic ordering")
 check(SequenceGrouping.groups(ties).allSatisfy { group in Set(group.photos.map(\.id)).count == group.photos.count }, "No self-comparison or duplicate candidate")
+let comparisons = SequenceGrouping.comparisons(SequenceGrouping.groups([photo("a", 0), photo("b", 1), photo("c", 2)]))
+check(Set(comparisons) == Set([CandidateComparison("a", "b"), CandidateComparison("a", "c"), CandidateComparison("b", "c")]), "Candidate comparisons are canonical and deduplicated")
 
 let chainPhotos = (0..<10).map { photo(String($0), Double($0)) }
 let chainPairs = (0..<9).map { SimilarityPair(first: String($0), second: String($0 + 1), distance: 0.4) }

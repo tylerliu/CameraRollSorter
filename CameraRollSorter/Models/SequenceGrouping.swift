@@ -17,6 +17,16 @@ struct PhotoSequence: Identifiable, Sendable {
     let photos: [TimedPhoto]
 }
 
+nonisolated struct CandidateComparison: Hashable, Sendable {
+    let first: String
+    let second: String
+
+    init(_ first: String, _ second: String) {
+        self.first = min(first, second)
+        self.second = max(first, second)
+    }
+}
+
 nonisolated enum SequenceGrouping {
     // Each photo gets up to five nearest neighbors, strictly less than 24 hours
     // away in either direction. Neighborhoods may overlap; they are not bursts.
@@ -42,6 +52,18 @@ nonisolated enum SequenceGrouping {
             }
             if !neighbors.isEmpty {
                 result.append(CandidateNeighborhood(anchor: anchor, photos: (neighbors + [index]).sorted().map { sorted[$0] }))
+            }
+        }
+        return result
+    }
+
+    static func comparisons(_ groups: [CandidateNeighborhood]) -> [CandidateComparison] {
+        var seen: Set<CandidateComparison> = []
+        var result: [CandidateComparison] = []
+        for group in groups {
+            for photo in group.photos where photo.id != group.anchor.id {
+                let comparison = CandidateComparison(group.anchor.id, photo.id)
+                if seen.insert(comparison).inserted { result.append(comparison) }
             }
         }
         return result

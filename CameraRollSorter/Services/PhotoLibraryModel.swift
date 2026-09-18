@@ -26,6 +26,9 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
     var progress = ""
     var threshold: Float = 0.4
     private var photos: [TimedPhoto] = []
+    private var accessiblePhotoCount = 0
+    private var missingDateCount = 0
+    private var unavailablePhotoIDs: Set<String> = []
     private let analyzer = SimilarityAnalyzer()
     var isScanning = false
     var hasScanned = false
@@ -43,12 +46,23 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
         refresh()
     }
 
+    func syncLibrary() async {
+        let currentAuthorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        guard currentAuthorization == authorization else {
+            authorization = currentAuthorization
+            refresh()
+            return
+        }
+        await reconcileLibraryChange()
+    }
+
     func refresh() {
         authorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         scanTask?.cancel()
         groups = []
         pairs = []
         photos = []
+        unavailablePhotoIDs = []
         analysisError = nil
         progress = "Reading photo dates…"
         revision = UUID()
@@ -64,7 +78,9 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
             let result = await scanner.scan()
             guard !Task.isCancelled else { return }
             photos = result.photos
-            summary = "\(result.count) accessible photos across your library. \(result.missingDates) accessible photos have no capture date and cannot be grouped."
+            accessiblePhotoCount = result.count
+            missingDateCount = result.missingDates
+            updateSummary()
             do {
                 let token = revision
                 let scores = try await analyzer.analyzeCandidates(
@@ -81,7 +97,8 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
                 )
                 guard !Task.isCancelled else { return }
                 pairs = scores.pairs
-                summary += " \(scores.unavailable) candidate photos unavailable locally."
+                unavailablePhotoIDs = scores.unavailableIDs
+                updateSummary()
                 applyThreshold()
             } catch {
                 guard !Task.isCancelled else { return }
@@ -95,6 +112,10 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
     func applyThreshold() {
         threshold = Float(UserDefaults.standard.object(forKey: "review.distanceThreshold") as? Double ?? 0.4)
         groups = SimilarityGrouping.groups(photos: photos, pairs: pairs, threshold: threshold)
+    }
+
+    private func updateSummary() {
+        summary = "\(accessiblePhotoCount) accessible photos across your library. \(missingDateCount) accessible photos have no capture date and cannot be grouped. \(unavailablePhotoIDs.count) candidate photos unavailable locally."
     }
 
     func scores(for group: PhotoSequence) -> [SimilarityPair] {
@@ -131,7 +152,86 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
     }
 
     nonisolated func photoLibraryDidChange(_ changeInstance: PHChange) {
-        Task { @MainActor [weak self] in self?.refresh() }
+        Task { @MainActor [weak self] in await self?.syncLibrary() }
+    }
+
+    private func reconcileLibraryChange() async {
+        guard canRead else {
+            refresh()
+            return
+        }
+        // A scan already in flight reads current PhotoKit state. Avoid replacing it
+        // with another library-wide pass when PhotoKit emits duplicate callbacks.
+        guard hasScanned, !isScanning else { return }
+
+        let result = await scanner.scan()
+        let oldIDs = Set(photos.map(\.id))
+        let newIDs = Set(result.photos.map(\.id))
+        let added = newIDs.subtracting(oldIDs)
+        let removed = oldIDs.subtracting(newIDs)
+
+        guard !added.isEmpty || !removed.isEmpty else {
+            accessiblePhotoCount = result.count
+            missingDateCount = result.missingDates
+            updateSummary()
+            return
+        }
+
+        let token = UUID()
+        revision = token
+        isScanning = true
+        hasScanned = false
+        analysisError = nil
+        accessiblePhotoCount = result.count
+        missingDateCount = result.missingDates
+        photos = result.photos
+        unavailablePhotoIDs.subtract(removed)
+
+        let orderedComparisons = SequenceGrouping.comparisons(result.groups)
+        let validComparisons = Set(orderedComparisons)
+        pairs = pairs.filter { validComparisons.contains(CandidateComparison($0.first, $0.second)) }
+
+        let measured = Set(pairs.map { CandidateComparison($0.first, $0.second) })
+        // Preserve chronological neighborhood order so the analyzer's bounded
+        // feature-print cache can reuse nearby images efficiently.
+        let missingComparisons = orderedComparisons.filter { !measured.contains($0) }
+        guard !missingComparisons.isEmpty else {
+            updateSummary()
+            applyThreshold()
+            progress = "Library updated"
+            isScanning = false
+            hasScanned = true
+            return
+        }
+        do {
+            let scores = try await analyzer.analyzeComparisons(
+                missingComparisons,
+                progress: { [weak self] completed, total in
+                    guard let self, self.revision == token else { return }
+                    self.progress = "Comparing library changes: \(completed) of \(total) pairs"
+                },
+                partialResults: { [weak self] newPairs in
+                    guard let self, self.revision == token else { return }
+                    self.pairs.append(contentsOf: newPairs)
+                    self.applyThreshold()
+                }
+            )
+            guard revision == token else { return }
+            pairs.append(contentsOf: scores.pairs.filter { score in
+                !pairs.contains { $0.id == score.id }
+            })
+            unavailablePhotoIDs.formUnion(scores.unavailableIDs)
+            updateSummary()
+            applyThreshold()
+        } catch is CancellationError {
+            return
+        } catch {
+            guard revision == token else { return }
+            analysisError = "Similarity analysis failed: \(error.localizedDescription). Pull to refresh to retry."
+        }
+        progress = "Library updated"
+        isScanning = false
+        hasScanned = true
     }
 }
 

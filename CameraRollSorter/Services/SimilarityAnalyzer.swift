@@ -4,7 +4,7 @@ import Vision
 
 struct SimilarityResult: Sendable {
     let pairs: [SimilarityPair]
-    let unavailable: Int
+    let unavailableIDs: Set<String>
 }
 
 // Serial background actor keeps Vision work off the UI and bounds image memory.
@@ -42,19 +42,14 @@ actor SimilarityAnalyzer {
         progress: @escaping @MainActor @Sendable (Int, Int) -> Void,
         partialResults: @escaping @MainActor @Sendable ([SimilarityPair]) -> Void
     ) async throws -> SimilarityResult {
-        struct Edge: Hashable {
-            let first: String
-            let second: String
-        }
-        var seen: Set<Edge> = []
-        var edges: [Edge] = []
-        for candidate in candidates {
-            for photo in candidate.photos where photo.id != candidate.anchor.id {
-                let ids = [candidate.anchor.id, photo.id].sorted()
-                let edge = Edge(first: ids[0], second: ids[1])
-                if seen.insert(edge).inserted { edges.append(edge) }
-            }
-        }
+        try await analyzeComparisons(SequenceGrouping.comparisons(candidates), progress: progress, partialResults: partialResults)
+    }
+
+    func analyzeComparisons(
+        _ comparisons: [CandidateComparison],
+        progress: @escaping @MainActor @Sendable (Int, Int) -> Void,
+        partialResults: @escaping @MainActor @Sendable ([SimilarityPair]) -> Void
+    ) async throws -> SimilarityResult {
         // A bounded per-scan cache avoids retaining a whole library of feature prints.
         var cache: [String: VNFeaturePrintObservation] = [:]
         var cacheOrder: [String] = []
@@ -71,8 +66,8 @@ actor SimilarityAnalyzer {
         var pairs: [SimilarityPair] = []
         var pendingPairs: [SimilarityPair] = []
         let partialResultsBatchSize = 5 // Delivery cadence only; groups have no size limit.
-        await progress(0, edges.count)
-        for (index, edge) in edges.enumerated() {
+        await progress(0, comparisons.count)
+        for (index, edge) in comparisons.enumerated() {
             try Task.checkCancellation()
             let first = try load(edge.first)
             let second = try load(edge.second)
@@ -88,9 +83,9 @@ actor SimilarityAnalyzer {
                     pendingPairs.removeAll(keepingCapacity: true)
                 }
             }
-            if index % 10 == 0 || index + 1 == edges.count { await progress(index + 1, edges.count) }
+            if index % 10 == 0 || index + 1 == comparisons.count { await progress(index + 1, comparisons.count) }
         }
         if !pendingPairs.isEmpty { await partialResults(pendingPairs) }
-        return SimilarityResult(pairs: pairs, unavailable: unavailable.count)
+        return SimilarityResult(pairs: pairs, unavailableIDs: unavailable)
     }
 }
