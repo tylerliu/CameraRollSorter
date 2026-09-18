@@ -4,6 +4,9 @@ import SwiftUI
 struct PhotoThumbnail: View {
     let identifier: String
     var size: CGFloat = 100
+    /// Called on the main actor whenever a non-degraded image is successfully loaded.
+    /// The filmstrip and chooser use this to avoid a blank flash when switching photos.
+    var onImageLoaded: (@MainActor (UIImage) -> Void)? = nil
     @State private var image: UIImage?
     @State private var request: PHImageRequestID?
     @State private var generation = UUID()
@@ -62,6 +65,7 @@ struct PhotoThumbnail: View {
                     requestImage(token: token, attempt: attempt + 1)
                 } else {
                     finished = true
+                    if let result { onImageLoaded?(result) }
                 }
             }
         }

@@ -22,6 +22,7 @@ struct PhotoChooserView: View {
     @State private var deletionError: String?
     @State private var centeredPhotoID: String?
     @State private var infoPhotoID: String?
+    @State private var isPreviewZoomed = false
 
     init(sequence: PhotoSequence, measuredPairs: [SimilarityPair], library: PhotoLibraryModel) {
         self.sequence = sequence
@@ -82,28 +83,37 @@ struct PhotoChooserView: View {
             VStack(spacing: 10) {
                 if !sequence.photos.isEmpty {
                     let preview = sequence.photos[min(burstPreviewIndex, sequence.photos.count - 1)]
-                    ZoomablePhotoView(identifier: preview.id) {
+                    let kept = keptIDs.contains(preview.id)
+
+                    ZoomablePhotoView(identifier: preview.id, isZoomed: $isPreviewZoomed, onTap: { toggle(preview.id) }) {
                         infoPhotoID = preview.id
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                    HStack {
-                        Text("\(position(preview.id)) of \(sequence.photos.count)")
-                        Spacer()
+                    .zIndex(isPreviewZoomed ? 1 : 0)
+                    .overlay(alignment: .bottomTrailing) {
                         Button {
                             toggle(preview.id)
                         } label: {
-                            Label(keptIDs.contains(preview.id) ? "Kept" : "Not kept", systemImage: keptIDs.contains(preview.id) ? "checkmark.circle.fill" : "circle")
+                            ZStack {
+                                // White backing so the icon reads against any photo.
+                                Circle()
+                                    .fill(.white)
+                                    .frame(width: 28, height: 28)
+                                Image(systemName: kept ? "checkmark.circle.fill" : "xmark.circle.fill")
+                                    .resizable()
+                                    .frame(width: 32, height: 32)
+                                    .foregroundStyle(kept ? Color.accentColor : Color.red)
+                            }
                         }
-                        .foregroundStyle(keptIDs.contains(preview.id) ? Color.accentColor : Color.red)
+                        .accessibilityLabel(kept ? "Kept" : "Not kept")
                         .accessibilityHint("Toggles whether this photo will be kept")
+                        // Inset slightly from the corner so it clears the rounded clip.
+                        .padding(14)
                     }
-                    .font(.subheadline.weight(.semibold))
-                    .padding(.horizontal)
 
                     filmstrip(width: geometry.size.width)
 
-                    Text("Pinch to zoom · swipe up for info")
+                    Text("Pinch to zoom · tap badge to toggle · swipe up for info")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -118,10 +128,16 @@ struct PhotoChooserView: View {
                 ForEach(Array(sequence.photos.enumerated()), id: \.element.id) { index, photo in
                     PhotoThumbnail(identifier: photo.id, size: 54)
                         .overlay(alignment: .bottomTrailing) {
-                            Image(systemName: keptIDs.contains(photo.id) ? "checkmark.circle.fill" : "circle")
-                                .symbolRenderingMode(.palette)
-                                .foregroundStyle(.white, keptIDs.contains(photo.id) ? Color.accentColor : Color.black.opacity(0.45))
-                                .padding(3)
+                            ZStack {
+                                Circle()
+                                    .fill(.white)
+                                    .frame(width: 14, height: 14)
+                                Image(systemName: keptIDs.contains(photo.id) ? "checkmark.circle.fill" : "xmark.circle.fill")
+                                    .resizable()
+                                    .frame(width: 18, height: 18)
+                                    .foregroundStyle(keptIDs.contains(photo.id) ? Color.accentColor : Color.red)
+                            }
+                            .padding(3)
                         }
                         .overlay {
                             if index == burstPreviewIndex {
