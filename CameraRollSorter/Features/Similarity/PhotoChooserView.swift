@@ -24,6 +24,12 @@ struct PhotoChooserView: View {
     @State private var infoPhotoID: String?
     @State private var isPreviewZoomed = false
 
+    // Aesthetics-based "best photo" hint. Purely a visual suggestion — it never
+    // changes the keep list, deletion, ordering, or grouping. Runs on its own
+    // actor so it doesn't block the library's similarity analysis.
+    @State private var bestIDs: Set<String> = []
+    private let aestheticsScorer = AestheticsScorer()
+
     init(sequence: PhotoSequence, measuredPairs: [SimilarityPair], library: PhotoLibraryModel) {
         self.sequence = sequence
         self.measuredPairs = measuredPairs
@@ -81,6 +87,14 @@ struct PhotoChooserView: View {
                     .presentationBackgroundInteraction(.enabled(upThrough: .medium))
             }
         }
+        .task(id: sequence.id) {
+            // Score the open group's photos for a best-shot suggestion. Runs on
+            // a dedicated actor, independent of the library similarity scan.
+            let ids = sequence.photos.map(\.id)
+            let result = await aestheticsScorer.score(identifiers: ids)
+            guard !Task.isCancelled else { return }
+            bestIDs = BestPhotoSelector.bestIDs(from: result)
+        }
     }
 
     private var burstContent: some View {
@@ -118,9 +132,15 @@ struct PhotoChooserView: View {
 
                     filmstrip(width: geometry.size.width)
 
-                    Text("Pinch to zoom · tap badge to toggle · swipe up for info")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    if bestIDs.contains(preview.id) {
+                        Label("Suggested best shot", systemImage: "sparkles")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("Pinch to zoom · tap to toggle · swipe up for info")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
             .padding(.vertical, 8)
@@ -131,32 +151,42 @@ struct PhotoChooserView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             LazyHStack(spacing: 7) {
                 ForEach(Array(sequence.photos.enumerated()), id: \.element.id) { index, photo in
-                    PhotoThumbnail(identifier: photo.id, size: 54)
-                        .overlay(alignment: .bottomTrailing) {
-                            ZStack {
-                                Circle()
-                                    .fill(.white)
-                                    .frame(width: 14, height: 14)
-                                Image(systemName: keptIDs.contains(photo.id) ? "checkmark.circle.fill" : "xmark.circle.fill")
-                                    .resizable()
-                                    .frame(width: 18, height: 18)
-                                    .foregroundStyle(keptIDs.contains(photo.id) ? Color.accentColor : Color.red)
+                    VStack(spacing: 4) {
+                        PhotoThumbnail(identifier: photo.id, size: 54)
+                            .overlay(alignment: .bottomTrailing) {
+                                ZStack {
+                                    Circle()
+                                        .fill(.white)
+                                        .frame(width: 14, height: 14)
+                                    Image(systemName: keptIDs.contains(photo.id) ? "checkmark.circle.fill" : "xmark.circle.fill")
+                                        .resizable()
+                                        .frame(width: 18, height: 18)
+                                        .foregroundStyle(keptIDs.contains(photo.id) ? Color.accentColor : Color.red)
+                                }
+                                .padding(3)
                             }
-                            .padding(3)
-                        }
-                        .overlay {
-                            if index == burstPreviewIndex {
-                                RoundedRectangle(cornerRadius: 8).stroke(.tint, lineWidth: 3)
+                            .overlay {
+                                if index == burstPreviewIndex {
+                                    RoundedRectangle(cornerRadius: 8).stroke(.tint, lineWidth: 3)
+                                }
                             }
-                        }
-                        .id(photo.id)
-                        .scrollTransition(.interactive, axis: .horizontal) { content, phase in
-                            content.scaleEffect(phase.isIdentity ? 1.08 : 0.9)
-                        }
-                        .onTapGesture {
-                            centeredPhotoID = photo.id
-                            burstPreviewIndex = index
-                        }
+
+                        // Suggested-best dot sits BELOW the thumbnail, in its own
+                        // reserved row (mirrors Photos burst selection). Visual
+                        // hint only; does not affect keep/delete state.
+                        Circle()
+                            .fill(bestIDs.contains(photo.id) ? Color.primary : Color.clear)
+                            .frame(width: 6, height: 6)
+                            .accessibilityLabel(bestIDs.contains(photo.id) ? "Suggested best photo" : "")
+                    }
+                    .id(photo.id)
+                    .scrollTransition(.interactive, axis: .horizontal) { content, phase in
+                        content.scaleEffect(phase.isIdentity ? 1.08 : 0.9)
+                    }
+                    .onTapGesture {
+                        centeredPhotoID = photo.id
+                        burstPreviewIndex = index
+                    }
                 }
             }
             .scrollTargetLayout()
@@ -164,7 +194,7 @@ struct PhotoChooserView: View {
         .contentMargins(.horizontal, max(0, (width - 54) / 2), for: .scrollContent)
         .scrollTargetBehavior(.viewAligned(limitBehavior: .always))
         .scrollPosition(id: $centeredPhotoID, anchor: .center)
-        .frame(height: 68)
+        .frame(height: 82)
         .task(id: sequence.id) {
             guard centeredPhotoID == nil, let firstID = sequence.photos.first?.id else { return }
             await Task.yield()
