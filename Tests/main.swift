@@ -112,3 +112,43 @@ let insertOrder = orderIDs(insertPhotos, insertPairs, 0.5)
 let xIndex = insertOrder.firstIndex(of: "X")!
 let xNeighbors = Set([xIndex - 1, xIndex + 1].filter { insertOrder.indices.contains($0) }.map { insertOrder[$0] })
 check(xNeighbors.contains("1"), "Off-spine node inserts adjacent to its closest match")
+
+// MARK: - Geo-proximity gating
+
+func geoPhoto(_ id: String, _ seconds: Double, _ lat: Double?, _ lon: Double?) -> TimedPhoto {
+    TimedPhoto(id: id, date: Date(timeIntervalSince1970: seconds), latitude: lat, longitude: lon)
+}
+
+// Haversine sanity: ~1 degree of latitude ≈ 111 km.
+let oneDegLat = SequenceGrouping.greatCircleMeters(0, 0, 1, 0)
+check(abs(oneDegLat - 111_195) < 500, "One degree of latitude is ~111 km")
+check(SequenceGrouping.greatCircleMeters(37.0, -122.0, 37.0, -122.0) == 0, "Same point is zero distance")
+
+// SF (37.7749,-122.4194) to LA (34.0522,-118.2437) ≈ 559 km.
+let sfToLA = SequenceGrouping.greatCircleMeters(37.7749, -122.4194, 34.0522, -118.2437)
+check(abs(sfToLA - 559_000) < 10_000, "SF→LA is roughly 559 km")
+
+// geoFiltered: both close → kept; both far → dropped; missing coord → kept.
+let geoPhotos = [
+    geoPhoto("near1", 0, 37.7749, -122.4194),
+    geoPhoto("near2", 1, 37.7750, -122.4195),   // ~15 m from near1
+    geoPhoto("far",   2, 34.0522, -118.2437),    // ~559 km away
+    geoPhoto("nogeo", 3, nil, nil),
+]
+let allComparisons = [
+    CandidateComparison("near1", "near2"),
+    CandidateComparison("near1", "far"),
+    CandidateComparison("near1", "nogeo"),
+]
+let gated = Set(SequenceGrouping.geoFiltered(allComparisons, photos: geoPhotos, maxMeters: 1000))
+check(gated.contains(CandidateComparison("near1", "near2")), "Nearby pair is kept")
+check(!gated.contains(CandidateComparison("near1", "far")), "Far pair beyond 1 km is dropped")
+check(gated.contains(CandidateComparison("near1", "nogeo")), "Pair missing a coordinate is always kept")
+
+// Larger radius keeps the far pair.
+let wide = Set(SequenceGrouping.geoFiltered(allComparisons, photos: geoPhotos, maxMeters: 1_000_000))
+check(wide.contains(CandidateComparison("near1", "far")), "Far pair kept when radius exceeds distance")
+
+// TimedPhoto without coordinates reports hasCoordinate == false.
+check(!geoPhoto("x", 0, nil, nil).hasCoordinate, "Missing coordinate flagged")
+check(geoPhoto("y", 0, 1, 2).hasCoordinate, "Present coordinate flagged")

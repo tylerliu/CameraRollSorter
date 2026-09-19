@@ -24,7 +24,7 @@ struct CleanupHomeView: View {
                     Button("Review settings", systemImage: "slider.horizontal.3") { showsSettings = true }
                 }
             }
-            .sheet(isPresented: $showsSettings, onDismiss: library.applyThreshold) { ReviewSettingsView() }
+            .sheet(isPresented: $showsSettings, onDismiss: library.applySettings) { ReviewSettingsView() }
             .background {
                 LimitedLibraryPicker(isPresented: $showsLimitedPicker, onFinished: library.refresh)
                     .frame(width: 0, height: 0)

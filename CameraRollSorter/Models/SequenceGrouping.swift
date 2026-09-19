@@ -3,6 +3,19 @@ import Foundation
 struct TimedPhoto: Identifiable, Sendable {
     let id: String
     let date: Date
+    // Optional capture coordinate, used for geo-proximity gating. Stored as raw
+    // doubles to keep this model free of CoreLocation and easily testable.
+    var latitude: Double?
+    var longitude: Double?
+
+    init(id: String, date: Date, latitude: Double? = nil, longitude: Double? = nil) {
+        self.id = id
+        self.date = date
+        self.latitude = latitude
+        self.longitude = longitude
+    }
+
+    var hasCoordinate: Bool { latitude != nil && longitude != nil }
 }
 
 struct CandidateNeighborhood: Sendable {
@@ -67,5 +80,38 @@ nonisolated enum SequenceGrouping {
             }
         }
         return result
+    }
+
+    /// Drops comparisons whose two photos are known to be far apart, so Vision
+    /// never runs on them. A pair is dropped ONLY when BOTH photos have a
+    /// coordinate and their great-circle distance exceeds `maxMeters`. If either
+    /// photo lacks a coordinate we can't rule it out, so it is kept (we never
+    /// skip a pair we're unsure about).
+    static func geoFiltered(
+        _ comparisons: [CandidateComparison],
+        photos: [TimedPhoto],
+        maxMeters: Double
+    ) -> [CandidateComparison] {
+        let byID = Dictionary(uniqueKeysWithValues: photos.map { ($0.id, $0) })
+        return comparisons.filter { pair in
+            guard let a = byID[pair.first], let b = byID[pair.second],
+                  let aLat = a.latitude, let aLon = a.longitude,
+                  let bLat = b.latitude, let bLon = b.longitude else {
+                return true // missing coordinate on either side → keep
+            }
+            return greatCircleMeters(aLat, aLon, bLat, bLon) <= maxMeters
+        }
+    }
+
+    /// Great-circle (haversine) distance in meters between two lat/lon points.
+    static func greatCircleMeters(_ lat1: Double, _ lon1: Double, _ lat2: Double, _ lon2: Double) -> Double {
+        let earthRadius = 6_371_000.0 // meters
+        let dLat = (lat2 - lat1) * .pi / 180
+        let dLon = (lon2 - lon1) * .pi / 180
+        let a = sin(dLat / 2) * sin(dLat / 2)
+            + cos(lat1 * .pi / 180) * cos(lat2 * .pi / 180)
+            * sin(dLon / 2) * sin(dLon / 2)
+        let c = 2 * atan2(sqrt(a), sqrt(1 - a))
+        return earthRadius * c
     }
 }

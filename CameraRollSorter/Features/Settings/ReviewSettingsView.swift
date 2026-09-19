@@ -2,6 +2,8 @@ import SwiftUI
 
 struct ReviewSettingsView: View {
     @AppStorage("review.distanceThreshold") private var threshold = 0.4
+    @AppStorage("review.geoGateEnabled") private var geoGateEnabled = true
+    @AppStorage("review.geoGateKilometers") private var geoGateKilometers = 1.0
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -13,6 +15,17 @@ struct ReviewSettingsView: View {
                         .accessibilityLabel("Maximum Vision distance")
                         .accessibilityValue(threshold.formatted(.number.precision(.fractionLength(2))))
                     Text("Default 0.40. Lower is stricter. Pairs at or below this distance join a group. Changes regroup existing scores when you close settings.")
+                        .foregroundStyle(.secondary)
+                }
+                Section("Location shortcut") {
+                    Toggle("Skip far-apart photos", isOn: $geoGateEnabled)
+                    if geoGateEnabled {
+                        LabeledContent("Maximum distance", value: "\(geoGateKilometers.formatted(.number.precision(.fractionLength(1)))) km")
+                        Slider(value: $geoGateKilometers, in: 0.1...50, step: 0.1)
+                            .accessibilityLabel("Maximum distance in kilometers")
+                            .accessibilityValue("\(geoGateKilometers.formatted(.number.precision(.fractionLength(1)))) kilometers")
+                    }
+                    Text("When on, photo pairs that both have location data and are farther apart than this are skipped without a visual comparison, speeding up the scan. Pairs missing location on either side are always compared. Changes take effect on the next scan (pull to refresh).")
                         .foregroundStyle(.secondary)
                 }
                 Section("Scan scope") {

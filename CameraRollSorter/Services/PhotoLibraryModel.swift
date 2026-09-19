@@ -38,6 +38,10 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
     private var candidateReconciliationTask: Task<Void, Never>?
     private let scanner = SequenceScanner()
     private var observing = false
+    // Geo-gate config captured at the last scan, so settings changes know
+    // whether a re-scan is actually needed. Initialized to the defaults.
+    private var lastScanGeoEnabled = true
+    private var lastScanGeoKilometers = 1.0
     var canRead: Bool { authorization == .authorized || authorization == .limited }
 
     deinit { PHPhotoLibrary.shared().unregisterChangeObserver(self) }
@@ -84,8 +88,8 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
             updateSummary()
             do {
                 let token = revision
-                let scores = try await analyzer.analyzeCandidates(
-                    result.groups,
+                let scores = try await analyzer.analyzeComparisons(
+                    comparisons(for: result.groups),
                     progress: { [self] completed, total in
                         guard self.revision == token else { return }
                         self.progress = "Comparing photos: \(completed) of \(total) pairs"
@@ -123,6 +127,41 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
 
     private func updateSummary() {
         summary = "\(accessiblePhotoCount) accessible photos across your library. \(missingDateCount) accessible photos have no capture date and cannot be grouped. \(unavailablePhotoIDs.count) candidate photos unavailable locally."
+    }
+
+    /// Build the comparison list for the given neighborhoods, applying the
+    /// geo-proximity gate when enabled in settings. Skipping distant pairs here
+    /// (before Vision) is what saves the work.
+    private func comparisons(for groups: [CandidateNeighborhood]) -> [CandidateComparison] {
+        let all = SequenceGrouping.comparisons(groups)
+        let enabled = Self.geoGateEnabledSetting
+        let km = Self.geoGateKilometersSetting
+        // Remember what this scan used, so applySettings() can tell if a change
+        // requires a re-scan.
+        lastScanGeoEnabled = enabled
+        lastScanGeoKilometers = km
+        guard enabled else { return all }
+        return SequenceGrouping.geoFiltered(all, photos: photos, maxMeters: max(0, km) * 1000)
+    }
+
+    private static var geoGateEnabledSetting: Bool {
+        UserDefaults.standard.object(forKey: "review.geoGateEnabled") as? Bool ?? true
+    }
+    private static var geoGateKilometersSetting: Double {
+        UserDefaults.standard.object(forKey: "review.geoGateKilometers") as? Double ?? 1.0
+    }
+
+    /// Called when the settings sheet closes. A threshold change only needs a
+    /// regroup; a geo-gate change (toggle or distance) changes which pairs get
+    /// measured, so it needs a full re-scan.
+    func applySettings() {
+        let geoChanged = Self.geoGateEnabledSetting != lastScanGeoEnabled
+            || (Self.geoGateEnabledSetting && Self.geoGateKilometersSetting != lastScanGeoKilometers)
+        if geoChanged {
+            refresh()
+        } else {
+            applyThreshold()
+        }
     }
 
     func scores(for group: PhotoSequence) -> [SimilarityPair] {
@@ -189,11 +228,15 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
 
     private func reconcileCurrentCandidateGraph() async {
         guard canRead, !isScanning else { return }
-        let orderedComparisons = SequenceGrouping.comparisons(SequenceGrouping.groups(photos))
-        let validComparisons = Set(orderedComparisons)
+        let neighborhoods = SequenceGrouping.groups(photos)
+        // Prune against the full time-based set (don't discard already-measured
+        // pairs just because geo-gating would skip them going forward).
+        let validComparisons = Set(SequenceGrouping.comparisons(neighborhoods))
         pairs.removeAll { !validComparisons.contains(CandidateComparison($0.first, $0.second)) }
         applyThreshold()
 
+        // Only measure the geo-gated set of still-missing comparisons.
+        let orderedComparisons = comparisons(for: neighborhoods)
         let measured = Set(pairs.map { CandidateComparison($0.first, $0.second) })
         let missingComparisons = orderedComparisons.filter { !measured.contains($0) }
         guard !missingComparisons.isEmpty else { return }
@@ -274,13 +317,15 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
         photos = result.photos
         unavailablePhotoIDs.subtract(removed)
 
-        let orderedComparisons = SequenceGrouping.comparisons(result.groups)
-        let validComparisons = Set(orderedComparisons)
+        // Prune against the full time-based set (keep already-measured pairs).
+        let validComparisons = Set(SequenceGrouping.comparisons(result.groups))
         pairs = pairs.filter { validComparisons.contains(CandidateComparison($0.first, $0.second)) }
 
-        let measured = Set(pairs.map { CandidateComparison($0.first, $0.second) })
+        // Only measure the geo-gated set of still-missing comparisons.
         // Preserve chronological neighborhood order so the analyzer's bounded
         // feature-print cache can reuse nearby images efficiently.
+        let orderedComparisons = comparisons(for: result.groups)
+        let measured = Set(pairs.map { CandidateComparison($0.first, $0.second) })
         let missingComparisons = orderedComparisons.filter { !measured.contains($0) }
         guard !missingComparisons.isEmpty else {
             updateSummary()
@@ -340,7 +385,13 @@ private actor SequenceScanner {
         var missing = 0
         assets.enumerateObjects { asset, _, _ in
             if let date = asset.creationDate {
-                photos.append(TimedPhoto(id: asset.localIdentifier, date: date))
+                let coordinate = asset.location?.coordinate
+                photos.append(TimedPhoto(
+                    id: asset.localIdentifier,
+                    date: date,
+                    latitude: coordinate?.latitude,
+                    longitude: coordinate?.longitude
+                ))
             } else { missing += 1 }
         }
         return Result(groups: SequenceGrouping.groups(photos), photos: photos, count: photos.count, missingDates: missing)

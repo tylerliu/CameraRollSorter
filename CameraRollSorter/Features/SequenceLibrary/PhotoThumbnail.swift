@@ -12,6 +12,7 @@ struct PhotoThumbnail: View {
     /// Called on the main actor whenever a non-degraded image is successfully loaded.
     /// The filmstrip and chooser use this to avoid a blank flash when switching photos.
     var onImageLoaded: (@MainActor (UIImage) -> Void)? = nil
+
     @State private var image: UIImage?
     @State private var request: PHImageRequestID?
     @State private var generation = UUID()
@@ -36,55 +37,39 @@ struct PhotoThumbnail: View {
         .contentShape(RoundedRectangle(cornerRadius: cornerRadius))
         .onAppear(perform: load)
         .onChange(of: identifier) { _, _ in load() }
-        .onDisappear {
-            cancelRequest()
-        }
+        .onDisappear(perform: cancelRequest)
     }
 
     private func load() {
+        // Fast path: a finished thumbnail already in the shared cache shows
+        // immediately with no spinner — this is what keeps scroll-back smooth.
+        if let cached = ThumbnailProvider.shared.cachedImage(id: identifier, size: size, fill: fill) {
+            image = cached
+            finished = true
+            return
+        }
+
         cancelRequest()
         let token = UUID()
         generation = token
         image = nil
         finished = false
-        requestImage(token: token, attempt: 0)
-    }
 
-    private func requestImage(token: UUID, attempt: Int) {
-        guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil).firstObject else {
+        request = ThumbnailProvider.shared.requestThumbnail(
+            id: identifier, size: size, fill: fill
+        ) { result, isFinal in
+            guard generation == token else { return }
+            if let result { image = result }
+            guard isFinal else { return }   // keep waiting for the final frame
+            request = nil
             finished = true
-            return
-        }
-        let options = PHImageRequestOptions()
-        options.isNetworkAccessAllowed = false
-        options.deliveryMode = .opportunistic
-        options.resizeMode = .fast
-        let dimension = max(1, size * 2)
-        let contentMode: PHImageContentMode = fill ? .aspectFill : .aspectFit
-        request = PHImageManager.default().requestImage(for: asset, targetSize: CGSize(width: dimension, height: dimension), contentMode: contentMode, options: options) { result, info in
-            let degraded = (info?[PHImageResultIsDegradedKey] as? Bool) == true
-            let cancelled = (info?[PHImageCancelledKey] as? Bool) == true
-            let error = info?[PHImageErrorKey] as? Error
-            Task { @MainActor in
-                guard generation == token else { return }
-                if let result { image = result }
-                guard !degraded else { return }
-                request = nil
-                if result == nil, !cancelled, error != nil, attempt < 2 {
-                    try? await Task.sleep(for: .milliseconds(400 * (attempt + 1)))
-                    guard generation == token else { return }
-                    requestImage(token: token, attempt: attempt + 1)
-                } else {
-                    finished = true
-                    if let result { onImageLoaded?(result) }
-                }
-            }
+            if let result { onImageLoaded?(result) }
         }
     }
 
     private func cancelRequest() {
         generation = UUID()
-        if let request { PHImageManager.default().cancelImageRequest(request) }
+        ThumbnailProvider.shared.cancel(request)
         request = nil
     }
 }
