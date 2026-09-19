@@ -1,0 +1,171 @@
+import Foundation
+import Observation
+import Photos
+
+enum LiveToStillError: LocalizedError {
+    case writeAccessRequired
+    case stillDataUnavailable
+    case changeRejected
+
+    var errorDescription: String? {
+        switch self {
+        case .writeAccessRequired:
+            return "Photo access does not allow changes. Grant full or limited read-write access and try again."
+        case .stillDataUnavailable:
+            return "Couldn’t read the still image for this Live Photo locally."
+        case .changeRejected:
+            return "Photos did not accept the change request."
+        }
+    }
+}
+
+/// A Live Photo eligible for conversion to a plain still. Only genuine Live
+/// Photos and Long Exposure are included — never Loop or Bounce, which are
+/// self-animating effects (PHAssetPlaybackStyle == .imageAnimated).
+struct LivePhotoItem: Identifiable, Sendable {
+    let id: String          // PHAsset.localIdentifier
+    let date: Date
+}
+
+@MainActor @Observable
+final class LiveToStillModel {
+    var authorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+    var items: [LivePhotoItem] = []
+    var isScanning = false
+    var hasScanned = false
+    var errorMessage: String?
+
+    private let scanner = LivePhotoScanner()
+    private var scanTask: Task<Void, Never>?
+
+    var canRead: Bool { authorization == .authorized || authorization == .limited }
+
+    /// Scan the library for convertible Live Photos. Cheap metadata-only pass;
+    /// runs on its own actor so it never blocks similarity analysis.
+    func scan() {
+        authorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        guard canRead else {
+            items = []
+            hasScanned = false
+            return
+        }
+        scanTask?.cancel()
+        errorMessage = nil
+        isScanning = true
+        scanTask = Task {
+            let found = await scanner.scan()
+            guard !Task.isCancelled else { return }
+            items = found
+            isScanning = false
+            hasScanned = true
+        }
+    }
+
+    /// Convert a set of Live Photos to stills. For each: read the full-res still
+    /// resource (metadata intact), write it as a new plain-photo asset, then
+    /// delete the Live original. Returns the count converted.
+    @discardableResult
+    func convertToStill(_ identifiers: Set<String>) async throws -> Int {
+        guard authorization == .authorized || authorization == .limited else {
+            throw LiveToStillError.writeAccessRequired
+        }
+        var converted = 0
+        for id in identifiers {
+            guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [id], options: nil).firstObject else { continue }
+            let data = try await stillImageData(for: asset)
+            try await replaceWithStill(asset: asset, stillData: data)
+            converted += 1
+        }
+        // Drop converted originals from the visible list.
+        items.removeAll { identifiers.contains($0.id) }
+        return converted
+    }
+
+    /// Full-resolution still-image data for the Live Photo's photo resource.
+    /// This data already carries the original EXIF/GPS metadata, so re-saving it
+    /// verbatim preserves metadata without re-encoding.
+    private func stillImageData(for asset: PHAsset) async throws -> Data {
+        let resources = PHAssetResource.assetResources(for: asset)
+        // The still component of a Live Photo is the .photo (or .fullSizePhoto) resource.
+        let photoResource = resources.first { $0.type == .fullSizePhoto }
+            ?? resources.first { $0.type == .photo }
+        guard let resource = photoResource else {
+            throw LiveToStillError.stillDataUnavailable
+        }
+
+        let options = PHAssetResourceRequestOptions()
+        options.isNetworkAccessAllowed = false
+
+        return try await withCheckedThrowingContinuation { continuation in
+            var buffer = Data()
+            PHAssetResourceManager.default().requestData(
+                for: resource,
+                options: options,
+                dataReceivedHandler: { buffer.append($0) },
+                completionHandler: { error in
+                    if let error {
+                        continuation.resume(throwing: error)
+                    } else if buffer.isEmpty {
+                        continuation.resume(throwing: LiveToStillError.stillDataUnavailable)
+                    } else {
+                        continuation.resume(returning: buffer)
+                    }
+                }
+            )
+        }
+    }
+
+    /// Create a new still asset from the raw still data, then delete the Live
+    /// original. Both happen in one change block so the swap is atomic.
+    private func replaceWithStill(asset: PHAsset, stillData: Data) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            PHPhotoLibrary.shared().performChanges({
+                let creation = PHAssetCreationRequest.forAsset()
+                let resourceOptions = PHAssetResourceCreationOptions()
+                // Pass the still data verbatim (no UIImage round-trip) so EXIF
+                // and GPS metadata survive intact.
+                creation.addResource(with: .photo, data: stillData, options: resourceOptions)
+                // Preserve capture date and favorite status on the new still.
+                creation.creationDate = asset.creationDate
+                creation.location = asset.location
+                creation.isFavorite = asset.isFavorite
+                PHAssetChangeRequest.deleteAssets([asset] as NSArray)
+            }) { success, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else if success {
+                    continuation.resume()
+                } else {
+                    continuation.resume(throwing: LiveToStillError.changeRejected)
+                }
+            }
+        }
+    }
+}
+
+/// Background actor that finds convertible Live Photos. Excludes Loop and
+/// Bounce (playbackStyle == .imageAnimated); keeps Live and Long Exposure
+/// (playbackStyle == .livePhoto).
+private actor LivePhotoScanner {
+    func scan() -> [LivePhotoItem] {
+        let options = PHFetchOptions()
+        // Only assets flagged as Live Photos are candidates.
+        options.predicate = NSPredicate(
+            format: "(mediaSubtypes & %d) != 0",
+            PHAssetMediaSubtype.photoLive.rawValue
+        )
+        options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+        let assets = PHAsset.fetchAssets(with: .image, options: options)
+
+        var items: [LivePhotoItem] = []
+        assets.enumerateObjects { asset, _, _ in
+            // Keep only genuine Live Photos and Long Exposure; exclude Loop and
+            // Bounce. LivePhotoVariation reads the effect type (with a public
+            // playbackStyle fallback).
+            guard LivePhotoVariation.of(asset).isConvertibleToStill else { return }
+            guard let date = asset.creationDate else { return }
+            items.append(LivePhotoItem(id: asset.localIdentifier, date: date))
+        }
+        return items
+    }
+}

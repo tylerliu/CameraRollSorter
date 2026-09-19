@@ -4,6 +4,11 @@ import SwiftUI
 struct PhotoThumbnail: View {
     let identifier: String
     var size: CGFloat = 100
+    /// When true, fills the square by cropping the image (center-crop, like the
+    /// Photos grid). When false (default), fits the whole image letterboxed.
+    var fill: Bool = false
+    /// Corner radius of the clipped tile.
+    var cornerRadius: CGFloat = 8
     /// Called on the main actor whenever a non-degraded image is successfully loaded.
     /// The filmstrip and chooser use this to avoid a blank flash when switching photos.
     var onImageLoaded: (@MainActor (UIImage) -> Void)? = nil
@@ -16,14 +21,19 @@ struct PhotoThumbnail: View {
         ZStack {
             Color.secondary.opacity(0.08)
             if let image {
-                Image(uiImage: image).resizable().scaledToFit()
+                if fill {
+                    Image(uiImage: image).resizable().scaledToFill()
+                } else {
+                    Image(uiImage: image).resizable().scaledToFit()
+                }
             } else if finished {
                 Image(systemName: "icloud.slash").foregroundStyle(.secondary)
                     .accessibilityLabel("Preview unavailable locally")
             } else { ProgressView() }
         }
         .frame(width: size, height: size)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
+        .contentShape(RoundedRectangle(cornerRadius: cornerRadius))
         .onAppear(perform: load)
         .onChange(of: identifier) { _, _ in load() }
         .onDisappear {
@@ -50,7 +60,8 @@ struct PhotoThumbnail: View {
         options.deliveryMode = .opportunistic
         options.resizeMode = .fast
         let dimension = max(1, size * 2)
-        request = PHImageManager.default().requestImage(for: asset, targetSize: CGSize(width: dimension, height: dimension), contentMode: .aspectFit, options: options) { result, info in
+        let contentMode: PHImageContentMode = fill ? .aspectFill : .aspectFit
+        request = PHImageManager.default().requestImage(for: asset, targetSize: CGSize(width: dimension, height: dimension), contentMode: contentMode, options: options) { result, info in
             let degraded = (info?[PHImageResultIsDegradedKey] as? Bool) == true
             let cancelled = (info?[PHImageCancelledKey] as? Bool) == true
             let error = info?[PHImageErrorKey] as? Error
