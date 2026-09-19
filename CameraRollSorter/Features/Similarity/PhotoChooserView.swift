@@ -74,7 +74,12 @@ struct PhotoChooserView: View {
             Text(deletionError ?? "Try again after checking photo access.")
         }
         .sheet(isPresented: infoSheetBinding) {
-            if let infoPhotoID { PhotoInfoView(identifier: infoPhotoID) }
+            if let infoPhotoID {
+                PhotoInfoView(identifier: infoPhotoID)
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+                    .presentationBackgroundInteraction(.enabled(upThrough: .medium))
+            }
         }
     }
 
