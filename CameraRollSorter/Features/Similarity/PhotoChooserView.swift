@@ -2,27 +2,23 @@ import Photos
 import SwiftUI
 
 struct PhotoChooserView: View {
-    private enum Mode: String, CaseIterable, Identifiable {
-        case burst = "Keep list"
-        case pairs = "Pair review"
-
-        var id: Self { self }
-    }
-
     let sequence: PhotoSequence
     let measuredPairs: [SimilarityPair]
     let library: PhotoLibraryModel
 
     @Environment(\.dismiss) private var dismiss
-    @State private var mode = Mode.burst
     @State private var keptIDs: Set<String>
     @State private var burstPreviewIndex = 0
-    @State private var pairIndex = 0
     @State private var isDeleting = false
     @State private var deletionError: String?
     @State private var centeredPhotoID: String?
     @State private var infoPhotoID: String?
     @State private var isPreviewZoomed = false
+
+    /// Photos ordered so the most-similar shots are adjacent (spine ordering),
+    /// making filmstrip scrubbing act as flicker comparison. Computed once from
+    /// the group's measured pairs at the current threshold.
+    private let orderedPhotos: [TimedPhoto]
 
     // Aesthetics-based "best photo" hint. Purely a visual suggestion — it never
     // changes the keep list, deletion, ordering, or grouping. Runs on its own
@@ -35,41 +31,23 @@ struct PhotoChooserView: View {
         self.measuredPairs = measuredPairs
         self.library = library
         _keptIDs = State(initialValue: Set(sequence.photos.map(\.id)))
+        // Reorder for flicker comparison: most-similar shots become adjacent.
+        self.orderedPhotos = SimilarityGrouping.similarityOrder(
+            photos: sequence.photos,
+            pairs: measuredPairs,
+            threshold: library.threshold
+        )
         // Set after the filmstrip's first layout so scrollPosition performs an
         // actual initial scroll instead of treating the value as already applied.
         _centeredPhotoID = State(initialValue: nil)
     }
 
-    private var orderedPairs: [SimilarityPair] {
-        measuredPairs.sorted {
-            if $0.distance != $1.distance { return $0.distance < $1.distance }
-            if $0.first != $1.first { return $0.first < $1.first }
-            return $0.second < $1.second
-        }
-    }
-
-    private var allIDs: Set<String> { Set(sequence.photos.map(\.id)) }
+    private var allIDs: Set<String> { Set(orderedPhotos.map(\.id)) }
     private var markedForDeletion: Set<String> { allIDs.subtracting(keptIDs) }
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("Review mode", selection: $mode) {
-                ForEach(Mode.allCases) { mode in
-                    Text(mode.rawValue).tag(mode)
-                }
-            }
-            .pickerStyle(.segmented)
-            .padding(.horizontal)
-            .padding(.vertical, 12)
-
-            Group {
-                switch mode {
-                case .burst:
-                    burstContent
-                case .pairs:
-                    pairContent
-                }
-            }
+            burstContent
         }
         .safeAreaInset(edge: .bottom) { actionBar }
         .navigationTitle("Choose photos")
@@ -90,7 +68,7 @@ struct PhotoChooserView: View {
         .task(id: sequence.id) {
             // Score the open group's photos for a best-shot suggestion. Runs on
             // a dedicated actor, independent of the library similarity scan.
-            let ids = sequence.photos.map(\.id)
+            let ids = orderedPhotos.map(\.id)
             let result = await aestheticsScorer.score(identifiers: ids)
             guard !Task.isCancelled else { return }
             bestIDs = BestPhotoSelector.bestIDs(from: result)
@@ -100,8 +78,8 @@ struct PhotoChooserView: View {
     private var burstContent: some View {
         GeometryReader { geometry in
             VStack(spacing: 10) {
-                if !sequence.photos.isEmpty {
-                    let preview = sequence.photos[min(burstPreviewIndex, sequence.photos.count - 1)]
+                if !orderedPhotos.isEmpty {
+                    let preview = orderedPhotos[min(burstPreviewIndex, orderedPhotos.count - 1)]
                     let kept = keptIDs.contains(preview.id)
 
                     ZoomablePhotoView(identifier: preview.id, isZoomed: $isPreviewZoomed, onTap: { toggle(preview.id) }) {
@@ -150,7 +128,7 @@ struct PhotoChooserView: View {
     private func filmstrip(width: CGFloat) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
             LazyHStack(spacing: 7) {
-                ForEach(Array(sequence.photos.enumerated()), id: \.element.id) { index, photo in
+                ForEach(Array(orderedPhotos.enumerated()), id: \.element.id) { index, photo in
                     VStack(spacing: 4) {
                         PhotoThumbnail(identifier: photo.id, size: 54)
                             .overlay(alignment: .bottomTrailing) {
@@ -196,87 +174,20 @@ struct PhotoChooserView: View {
         .scrollPosition(id: $centeredPhotoID, anchor: .center)
         .frame(height: 82)
         .task(id: sequence.id) {
-            guard centeredPhotoID == nil, let firstID = sequence.photos.first?.id else { return }
+            guard centeredPhotoID == nil, let firstID = orderedPhotos.first?.id else { return }
             await Task.yield()
             centeredPhotoID = firstID
         }
         .onChange(of: centeredPhotoID) { _, identifier in
             guard let identifier,
-                  let index = sequence.photos.firstIndex(where: { $0.id == identifier }) else { return }
+                  let index = orderedPhotos.firstIndex(where: { $0.id == identifier }) else { return }
             burstPreviewIndex = index
         }
         .onChange(of: burstPreviewIndex) { _, index in
-            guard sequence.photos.indices.contains(index) else { return }
-            centeredPhotoID = sequence.photos[index].id
+            guard orderedPhotos.indices.contains(index) else { return }
+            centeredPhotoID = orderedPhotos[index].id
         }
         .accessibilityLabel("Photo filmstrip")
-    }
-
-    @ViewBuilder
-    private var pairContent: some View {
-        if orderedPairs.isEmpty {
-            ContentUnavailableView("No measured pairs", systemImage: "arrow.left.arrow.right", description: Text("This group has no stored similarity connections to review."))
-        } else if pairIndex >= orderedPairs.count {
-            ContentUnavailableView {
-                Label("Pair review complete", systemImage: "checkmark.circle")
-            } description: {
-                Text("You reviewed all \(orderedPairs.count) connections. You can still change the keep list below or review the pairs again.")
-            } actions: {
-                Button("Review pairs again") { pairIndex = 0 }
-                    .buttonStyle(.bordered)
-            }
-        } else {
-            let pair = orderedPairs[pairIndex]
-            ScrollView {
-                VStack(spacing: 18) {
-                    Text("Pair \(pairIndex + 1) of \(orderedPairs.count)")
-                        .font(.headline)
-                    Text("Mark a photo for deletion below, or skip to keep both. Apply deletions using the button at the bottom.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-
-                    HStack(spacing: 14) {
-                        pairCard(identifier: pair.first, title: "Photo \(position(pair.first))") {
-                            choose(.second, for: pair)
-                        }
-                        pairCard(identifier: pair.second, title: "Photo \(position(pair.second))") {
-                            choose(.first, for: pair)
-                        }
-                    }
-
-                    Text("Vision distance \(pair.distance, format: .number.precision(.fractionLength(4))) · lower is closer")
-                        .font(.subheadline.monospacedDigit())
-                        .foregroundStyle(.secondary)
-
-                    HStack {
-                        Button("Previous") { pairIndex = max(0, pairIndex - 1) }
-                            .disabled(pairIndex == 0)
-                        Spacer()
-                        Button("Skip") { choose(.both, for: pair) }
-                    }
-                    .font(.subheadline)
-                }
-                .padding()
-            }
-        }
-    }
-
-    private func pairCard(identifier: String, title: String, onDelete: @escaping () -> Void) -> some View {
-        VStack(spacing: 8) {
-            PhotoThumbnail(identifier: identifier, size: 145)
-            Text(title).font(.caption)
-            Label(keptIDs.contains(identifier) ? "Kept" : "Marked for deletion", systemImage: keptIDs.contains(identifier) ? "checkmark" : "trash")
-                .font(.caption2)
-                .foregroundStyle(keptIDs.contains(identifier) ? Color.accentColor : Color.secondary)
-            Button(role: .destructive, action: onDelete) {
-                Label("Delete", systemImage: "trash")
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(.red)
-            .accessibilityLabel("Mark \(title) for deletion")
-        }
-        .frame(maxWidth: .infinity)
     }
 
     private var actionBar: some View {
@@ -284,7 +195,7 @@ struct PhotoChooserView: View {
             Divider()
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("\(keptIDs.count) of \(sequence.photos.count) kept")
+                    Text("\(keptIDs.count) of \(orderedPhotos.count) kept")
                         .font(.subheadline.weight(.semibold))
                     if markedForDeletion.isEmpty {
                         Text("No photos marked for deletion")
@@ -314,33 +225,12 @@ struct PhotoChooserView: View {
         .background(.bar)
     }
 
-    private enum PairChoice { case first, second, both }
-
-    private func choose(_ choice: PairChoice, for pair: SimilarityPair) {
-        switch choice {
-        case .first:
-            keptIDs.insert(pair.first)
-            keptIDs.remove(pair.second)
-        case .second:
-            keptIDs.remove(pair.first)
-            keptIDs.insert(pair.second)
-        case .both:
-            keptIDs.insert(pair.first)
-            keptIDs.insert(pair.second)
-        }
-        pairIndex = min(orderedPairs.count, pairIndex + 1)
-    }
-
     private func toggle(_ identifier: String) {
         if keptIDs.contains(identifier) {
             keptIDs.remove(identifier)
         } else {
             keptIDs.insert(identifier)
         }
-    }
-
-    private func position(_ identifier: String) -> Int {
-        (sequence.photos.firstIndex { $0.id == identifier } ?? 0) + 1
     }
 
     private var deletionAlertBinding: Binding<Bool> {

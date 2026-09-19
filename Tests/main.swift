@@ -56,3 +56,59 @@ let equalEdges = triangle.map { SimilarityPair(first: $0.first, second: $0.secon
 check(SimilarityGrouping.minimumSpanningTree(photos: Array(chainPhotos.prefix(3)), pairs: equalEdges, threshold: 0.5).map(\.id) == SimilarityGrouping.minimumSpanningTree(photos: Array(chainPhotos.prefix(3)), pairs: equalEdges.reversed(), threshold: 0.5).map(\.id), "Equal-score MST is deterministic")
 let reversedDuplicate = SimilarityPair(first: "1", second: "0", distance: 0.1)
 check(SimilarityGrouping.minimumSpanningTree(photos: Array(chainPhotos.prefix(3)), pairs: triangle + [reversedDuplicate], threshold: 0.5).count == 2, "Reversed duplicate edges do not create extra links")
+
+// MARK: - Similarity ordering (spine + cheapest-gap insertion)
+
+func orderIDs(_ photos: [TimedPhoto], _ pairs: [SimilarityPair], _ threshold: Float) -> [String] {
+    SimilarityGrouping.similarityOrder(photos: photos, pairs: pairs, threshold: threshold).map(\.id)
+}
+
+// A pure chain 0-1-2-3-4 with increasing edges should stay in chain order.
+let orderChainPhotos = (0..<5).map { photo(String($0), Double($0)) }
+let orderChainPairs = (0..<4).map { SimilarityPair(first: String($0), second: String($0 + 1), distance: 0.1) }
+let chainOrder = orderIDs(orderChainPhotos, orderChainPairs, 0.5)
+check(chainOrder == ["0", "1", "2", "3", "4"] || chainOrder == ["4", "3", "2", "1", "0"], "Pure chain keeps chain adjacency (either direction)")
+check(Set(chainOrder) == Set(["0", "1", "2", "3", "4"]), "Ordering preserves all members")
+
+// No edges at all → falls back to the input order.
+check(orderIDs(orderChainPhotos, [], 0.5) == ["0", "1", "2", "3", "4"], "No measured edges falls back to input order")
+
+// Two photos are returned unchanged (guard count > 2).
+let twoPhotos = [photo("a", 0), photo("b", 1)]
+check(orderIDs(twoPhotos, [SimilarityPair(first: "a", second: "b", distance: 0.1)], 0.5).count == 2, "Two-photo group returned as-is")
+
+// Star: center C tightly linked to A,B,D. Spine is the two longest arms;
+// remaining arm inserts next to C. All members present, deterministic.
+let starPhotos = ["A", "B", "C", "D"].enumerated().map { photo($0.element, Double($0.offset)) }
+let starPairs = [
+    SimilarityPair(first: "C", second: "A", distance: 0.1),
+    SimilarityPair(first: "C", second: "B", distance: 0.2),
+    SimilarityPair(first: "C", second: "D", distance: 0.3),
+]
+let starOrder = orderIDs(starPhotos, starPairs, 0.5)
+check(Set(starOrder) == Set(["A", "B", "C", "D"]), "Star ordering keeps all members")
+check(starOrder == orderIDs(starPhotos.reversed(), starPairs.reversed(), 0.5), "Star ordering is deterministic under input reordering")
+// C must be adjacent to at least two of its arms (it's the hub).
+let cIndex = starOrder.firstIndex(of: "C")!
+let cNeighbors = Set([cIndex - 1, cIndex + 1].filter { starOrder.indices.contains($0) }.map { starOrder[$0] })
+check(cNeighbors.count == 2, "Hub sits between two neighbors")
+
+// Isolated photo (no edges) is appended at the end after connected members.
+let withIsolated = orderChainPhotos + [photo("z", 100)]
+let isoOrder = orderIDs(withIsolated, orderChainPairs, 0.5)
+check(isoOrder.last == "z", "Isolated photo is appended at the end")
+check(Set(isoOrder) == Set(["0", "1", "2", "3", "4", "z"]), "Isolated ordering preserves all members")
+
+// Off-spine node prefers the cheaper gap. Chain 0-1-2-3 plus X measured close
+// to 1 (0.05) — X should land adjacent to 1.
+let insertPhotos = (0..<4).map { photo(String($0), Double($0)) } + [photo("X", 10)]
+let insertPairs = [
+    SimilarityPair(first: "0", second: "1", distance: 0.1),
+    SimilarityPair(first: "1", second: "2", distance: 0.1),
+    SimilarityPair(first: "2", second: "3", distance: 0.1),
+    SimilarityPair(first: "1", second: "X", distance: 0.05),
+]
+let insertOrder = orderIDs(insertPhotos, insertPairs, 0.5)
+let xIndex = insertOrder.firstIndex(of: "X")!
+let xNeighbors = Set([xIndex - 1, xIndex + 1].filter { insertOrder.indices.contains($0) }.map { insertOrder[$0] })
+check(xNeighbors.contains("1"), "Off-spine node inserts adjacent to its closest match")
