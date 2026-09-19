@@ -11,21 +11,7 @@ struct SimilarityResult: Sendable {
 actor SimilarityAnalyzer {
     private func featurePrint(_ identifier: String) throws -> VNFeaturePrintObservation? {
         return try autoreleasepool {
-                guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil).firstObject else { return nil }
-                let options = PHImageRequestOptions()
-                options.isSynchronous = true
-                options.isNetworkAccessAllowed = false
-                options.deliveryMode = .highQualityFormat
-                options.resizeMode = .exact
-                options.version = .current
-                var loaded: UIImage?
-                PHImageManager.default().requestImage(for: asset, targetSize: CGSize(width: 512, height: 512), contentMode: .aspectFit, options: options) { image, info in
-                    guard (info?[PHImageResultIsDegradedKey] as? Bool) != true,
-                          info?[PHImageErrorKey] == nil,
-                          (info?[PHImageCancelledKey] as? Bool) != true else { return }
-                    loaded = image
-                }
-                guard let loaded else { return nil }
+                guard let loaded = PhotoImageLoading.synchronousImage(for: identifier, targetSize: 512) else { return nil }
                 // Render once to normalize UIImage orientation without cropping.
                 let format = UIGraphicsImageRendererFormat()
                 format.scale = 1

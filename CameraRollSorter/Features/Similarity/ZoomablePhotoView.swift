@@ -190,18 +190,27 @@ struct ZoomablePhotoView: View {
     }
 }
 
-// MARK: - UIScrollView-backed zoomable image (based on Silenterc/ImageViewer)
+// MARK: - UIScrollView-backed zoomable content (shared)
 
-/// A UIImage wrapper made zoomable by wrapping UIScrollView. Pinch-zoom and
-/// simultaneous panning are handled natively by UIScrollView — pure SwiftUI
-/// gestures cannot do this reliably.
+/// A generic `UIViewRepresentable` that makes any `UIView` zoomable by hosting
+/// it inside a `UIScrollView`. Pinch-zoom and simultaneous panning are handled
+/// natively by UIScrollView — pure SwiftUI gestures cannot do this reliably.
 ///
-/// Key detail: the UIImageView is pinned to the scroll view's dimensions with
+/// Key detail: the content view is pinned to the scroll view's dimensions with
 /// Auto Layout and uses `.scaleAspectFit`. We do NOT manually set frames,
 /// contentSize, or re-centre during zoom — doing so fights UIScrollView's own
 /// zoom transform and breaks panning.
-private struct ZoomableImage: UIViewRepresentable {
-    let image: UIImage
+///
+/// Both the still image (`UIImageView`) and Live Photo (`PHLivePhotoView`)
+/// hosts are built from this one type, differing only in `makeContent` and the
+/// optional `updateContent` / `teardownContent` hooks.
+private struct ZoomableScrollView<Content: UIView>: UIViewRepresentable {
+    /// Builds the content view to host. Called once in `makeUIView`.
+    let makeContent: () -> Content
+    /// Optional per-update reconfiguration (e.g. swap a PHLivePhoto).
+    var updateContent: ((Content) -> Void)?
+    /// Optional teardown (e.g. stop Live Photo playback) on dismantle.
+    var teardownContent: ((Content) -> Void)?
     var onZoomStarted: (() -> Void)?
     var onZoomEnded: ((CGFloat) -> Void)?
     var onSingleTap: (() -> Void)?
@@ -218,24 +227,28 @@ private struct ZoomableImage: UIViewRepresentable {
         scrollView.showsHorizontalScrollIndicator = false
         scrollView.showsVerticalScrollIndicator = false
         scrollView.backgroundColor = .clear
-        // Let the zoomed image overflow the frame rather than being clipped.
+        // Let the zoomed content overflow the frame rather than being clipped.
         scrollView.clipsToBounds = false
 
-        let imageView = UIImageView(image: image)
-        imageView.contentMode = .scaleAspectFit
-        imageView.tag = 1
-        imageView.backgroundColor = .clear
-        imageView.translatesAutoresizingMaskIntoConstraints = false
-        scrollView.addSubview(imageView)
+        let content = makeContent()
+        content.contentMode = .scaleAspectFit
+        content.tag = 1
+        content.backgroundColor = .clear
+        content.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.addSubview(content)
+        context.coordinator.content = content
+        context.coordinator.teardown = teardownContent
 
         NSLayoutConstraint.activate([
-            imageView.widthAnchor.constraint(equalTo: scrollView.widthAnchor),
-            imageView.heightAnchor.constraint(equalTo: scrollView.heightAnchor),
-            imageView.centerXAnchor.constraint(equalTo: scrollView.centerXAnchor),
-            imageView.centerYAnchor.constraint(equalTo: scrollView.centerYAnchor)
+            content.widthAnchor.constraint(equalTo: scrollView.widthAnchor),
+            content.heightAnchor.constraint(equalTo: scrollView.heightAnchor),
+            content.centerXAnchor.constraint(equalTo: scrollView.centerXAnchor),
+            content.centerYAnchor.constraint(equalTo: scrollView.centerYAnchor)
         ])
 
-        // Single-tap: toggle keep/delete.
+        // Single-tap toggles selection/keep. A hosted view's own recognizers
+        // (e.g. PHLivePhotoView's press-and-hold playback) are separate and
+        // are not blocked by this.
         let singleTap = UITapGestureRecognizer(
             target: context.coordinator,
             action: #selector(Coordinator.handleSingleTap(recognizer:))
@@ -259,9 +272,16 @@ private struct ZoomableImage: UIViewRepresentable {
         context.coordinator.onZoomEnded = onZoomEnded
         context.coordinator.onSingleTap = onSingleTap
         context.coordinator.onSwipeUp = onSwipeUp
+        if let content = context.coordinator.content { updateContent?(content) }
+    }
+
+    static func dismantleUIView(_ uiView: UIScrollView, coordinator: Coordinator) {
+        if let content = coordinator.content { coordinator.teardown?(content) }
     }
 
     final class Coordinator: NSObject, UIScrollViewDelegate {
+        var content: Content?
+        var teardown: ((Content) -> Void)?
         var onZoomStarted: (() -> Void)?
         var onZoomEnded: ((CGFloat) -> Void)?
         var onSingleTap: (() -> Void)?
@@ -278,8 +298,8 @@ private struct ZoomableImage: UIViewRepresentable {
         func scrollViewDidEndZooming(
             _ scrollView: UIScrollView, with view: UIView?, atScale scale: CGFloat
         ) {
-            // Snap back to 1× when the pinch is released, so the image returns
-            // to its original size and frame (comparison workflow).
+            // Snap back to 1× when the pinch is released, so content returns to
+            // its original size and frame (comparison workflow).
             if scale > scrollView.minimumZoomScale {
                 scrollView.setZoomScale(scrollView.minimumZoomScale, animated: true)
             }
@@ -298,117 +318,55 @@ private struct ZoomableImage: UIViewRepresentable {
     }
 }
 
-// MARK: - UIScrollView-backed zoomable Live Photo
+// MARK: - Still image / Live Photo builders
 
-/// A PHLivePhoto wrapper made zoomable by hosting a `PHLivePhotoView` inside a
-/// `UIScrollView`. Because the Live Photo view is the scroll view's zooming
-/// subview, pinch-zoom, pan, the swipe-up info gesture, AND the built-in
-/// press-and-hold playback all coexist on one coordinated gesture surface.
-///
-/// Mirrors `ZoomableImage`: `.scaleAspectFit`, Auto Layout pinned to the scroll
-/// view, and snap-back to 1× when a pinch is released.
-private struct LivePhotoZoomView: UIViewRepresentable {
+/// Zoomable still image, hosting a `UIImageView`.
+private struct ZoomableImage: View {
+    let image: UIImage
+    var onZoomStarted: (() -> Void)?
+    var onZoomEnded: ((CGFloat) -> Void)?
+    var onSingleTap: (() -> Void)?
+    var onSwipeUp: (() -> Void)?
+
+    var body: some View {
+        ZoomableScrollView<UIImageView>(
+            makeContent: { UIImageView(image: image) },
+            onZoomStarted: onZoomStarted,
+            onZoomEnded: onZoomEnded,
+            onSingleTap: onSingleTap,
+            onSwipeUp: onSwipeUp
+        )
+    }
+}
+
+/// Zoomable Live Photo, hosting a `PHLivePhotoView`. The hosted view's built-in
+/// press-and-hold playback coexists with the scroll view's zoom/pan and the
+/// swipe-up info gesture on one coordinated gesture surface.
+private struct LivePhotoZoomView: View {
     let livePhoto: PHLivePhoto
     var onZoomStarted: (() -> Void)?
     var onZoomEnded: ((CGFloat) -> Void)?
     var onSingleTap: (() -> Void)?
     var onSwipeUp: (() -> Void)?
 
-    func makeCoordinator() -> Coordinator { Coordinator() }
-
-    func makeUIView(context: Context) -> UIScrollView {
-        let scrollView = UIScrollView()
-        scrollView.delegate = context.coordinator
-        scrollView.maximumZoomScale = 5.0
-        scrollView.minimumZoomScale = 1.0
-        scrollView.bouncesZoom = true
-        scrollView.showsHorizontalScrollIndicator = false
-        scrollView.showsVerticalScrollIndicator = false
-        scrollView.backgroundColor = .clear
-        scrollView.clipsToBounds = false
-
-        let livePhotoView = PHLivePhotoView()
-        livePhotoView.contentMode = .scaleAspectFit
-        livePhotoView.livePhoto = livePhoto
-        livePhotoView.tag = 1
-        livePhotoView.translatesAutoresizingMaskIntoConstraints = false
-        scrollView.addSubview(livePhotoView)
-
-        NSLayoutConstraint.activate([
-            livePhotoView.widthAnchor.constraint(equalTo: scrollView.widthAnchor),
-            livePhotoView.heightAnchor.constraint(equalTo: scrollView.heightAnchor),
-            livePhotoView.centerXAnchor.constraint(equalTo: scrollView.centerXAnchor),
-            livePhotoView.centerYAnchor.constraint(equalTo: scrollView.centerYAnchor)
-        ])
-        context.coordinator.livePhotoView = livePhotoView
-
-        // Single-tap toggles selection/keep. The Live view's own long-press
-        // (playback) recognizer is separate and is not blocked by this.
-        let singleTap = UITapGestureRecognizer(
-            target: context.coordinator,
-            action: #selector(Coordinator.handleSingleTap(recognizer:))
+    var body: some View {
+        ZoomableScrollView<PHLivePhotoView>(
+            makeContent: {
+                let view = PHLivePhotoView()
+                view.livePhoto = livePhoto
+                return view
+            },
+            updateContent: { (view: PHLivePhotoView) in
+                if view.livePhoto !== livePhoto { view.livePhoto = livePhoto }
+            },
+            teardownContent: { (view: PHLivePhotoView) in
+                view.stopPlayback()
+                view.livePhoto = nil
+            },
+            onZoomStarted: onZoomStarted,
+            onZoomEnded: onZoomEnded,
+            onSingleTap: onSingleTap,
+            onSwipeUp: onSwipeUp
         )
-        singleTap.numberOfTapsRequired = 1
-        scrollView.addGestureRecognizer(singleTap)
-
-        // Swipe-up: info sheet (only when not zoomed).
-        let swipeUp = UISwipeGestureRecognizer(
-            target: context.coordinator,
-            action: #selector(Coordinator.handleSwipeUp(recognizer:))
-        )
-        swipeUp.direction = .up
-        scrollView.addGestureRecognizer(swipeUp)
-
-        return scrollView
-    }
-
-    func updateUIView(_ uiView: UIScrollView, context: Context) {
-        context.coordinator.onZoomStarted = onZoomStarted
-        context.coordinator.onZoomEnded = onZoomEnded
-        context.coordinator.onSingleTap = onSingleTap
-        context.coordinator.onSwipeUp = onSwipeUp
-        if context.coordinator.livePhotoView?.livePhoto !== livePhoto {
-            context.coordinator.livePhotoView?.livePhoto = livePhoto
-        }
-    }
-
-    static func dismantleUIView(_ uiView: UIScrollView, coordinator: Coordinator) {
-        coordinator.livePhotoView?.stopPlayback()
-        coordinator.livePhotoView?.livePhoto = nil
-    }
-
-    final class Coordinator: NSObject, UIScrollViewDelegate {
-        weak var livePhotoView: PHLivePhotoView?
-        var onZoomStarted: (() -> Void)?
-        var onZoomEnded: ((CGFloat) -> Void)?
-        var onSingleTap: (() -> Void)?
-        var onSwipeUp: (() -> Void)?
-
-        func viewForZooming(in scrollView: UIScrollView) -> UIView? {
-            scrollView.viewWithTag(1)
-        }
-
-        func scrollViewWillBeginZooming(_ scrollView: UIScrollView, with view: UIView?) {
-            onZoomStarted?()
-        }
-
-        func scrollViewDidEndZooming(
-            _ scrollView: UIScrollView, with view: UIView?, atScale scale: CGFloat
-        ) {
-            if scale > scrollView.minimumZoomScale {
-                scrollView.setZoomScale(scrollView.minimumZoomScale, animated: true)
-            }
-            onZoomEnded?(scrollView.minimumZoomScale)
-        }
-
-        @objc func handleSingleTap(recognizer: UITapGestureRecognizer) {
-            onSingleTap?()
-        }
-
-        @objc func handleSwipeUp(recognizer: UISwipeGestureRecognizer) {
-            guard let scrollView = recognizer.view as? UIScrollView,
-                  scrollView.zoomScale <= scrollView.minimumZoomScale else { return }
-            onSwipeUp?()
-        }
     }
 }

@@ -52,29 +52,9 @@ actor AestheticsScorer {
     @available(iOS 18.0, *)
     private func scoreOne(_ identifier: String) -> Outcome {
         autoreleasepool {
-            guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil).firstObject else {
+            guard let cgImage = PhotoImageLoading.synchronousImage(for: identifier, targetSize: 512)?.cgImage else {
                 return .failed
             }
-            let options = PHImageRequestOptions()
-            options.isSynchronous = true
-            options.isNetworkAccessAllowed = false
-            options.deliveryMode = .highQualityFormat
-            options.resizeMode = .exact
-            options.version = .current
-
-            var loaded: UIImage?
-            PHImageManager.default().requestImage(
-                for: asset,
-                targetSize: CGSize(width: 512, height: 512),
-                contentMode: .aspectFit,
-                options: options
-            ) { image, info in
-                guard (info?[PHImageResultIsDegradedKey] as? Bool) != true,
-                      info?[PHImageErrorKey] == nil,
-                      (info?[PHImageCancelledKey] as? Bool) != true else { return }
-                loaded = image
-            }
-            guard let cgImage = loaded?.cgImage else { return .failed }
             do {
                 let score = try AestheticsRequestRunner.score(for: cgImage)
                 return .scored(score.overall, isUtility: score.isUtility)
