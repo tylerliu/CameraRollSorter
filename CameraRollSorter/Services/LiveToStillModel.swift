@@ -61,24 +61,37 @@ final class LiveToStillModel {
         }
     }
 
-    /// Convert a set of Live Photos to stills. For each: read the full-res still
-    /// resource (metadata intact), write it as a new plain-photo asset, then
-    /// delete the Live original. Returns the count converted.
+    /// Convert a set of Live Photos to stills.
+    ///
+    /// Done in two phases so the whole batch needs only ONE system deletion
+    /// confirmation:
+    /// 1. Read every still resource first (reads don't prompt).
+    /// 2. In a single `performChanges` block, create all new stills and delete
+    ///    all originals at once — PhotoKit shows one confirmation for the batch.
+    ///
+    /// Returns the number converted.
     @discardableResult
     func convertToStill(_ identifiers: Set<String>) async throws -> Int {
         guard authorization == .authorized || authorization == .limited else {
             throw LiveToStillError.writeAccessRequired
         }
-        var converted = 0
+
+        // Phase 1 — gather (asset, still data). Reads only; no prompts.
+        var jobs: [(asset: PHAsset, data: Data)] = []
         for id in identifiers {
             guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [id], options: nil).firstObject else { continue }
             let data = try await stillImageData(for: asset)
-            try await replaceWithStill(asset: asset, stillData: data)
-            converted += 1
+            jobs.append((asset, data))
         }
+        guard !jobs.isEmpty else { return 0 }
+
+        // Phase 2 — one atomic change: create all stills, delete all originals.
+        try await replaceWithStills(jobs)
+
         // Drop converted originals from the visible list.
-        items.removeAll { identifiers.contains($0.id) }
-        return converted
+        let convertedIDs = Set(jobs.map { $0.asset.localIdentifier })
+        items.removeAll { convertedIDs.contains($0.id) }
+        return jobs.count
     }
 
     /// Full-resolution still-image data for the Live Photo's photo resource.
@@ -115,21 +128,27 @@ final class LiveToStillModel {
         }
     }
 
-    /// Create a new still asset from the raw still data, then delete the Live
-    /// original. Both happen in one change block so the swap is atomic.
-    private func replaceWithStill(asset: PHAsset, stillData: Data) async throws {
+    /// Create new still assets from the gathered data and delete all the Live
+    /// originals — in a SINGLE change block. Batching the deletions into one
+    /// `deleteAssets` call means the system shows just one confirmation for the
+    /// whole conversion, not one per photo.
+    private func replaceWithStills(_ jobs: [(asset: PHAsset, data: Data)]) async throws {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             PHPhotoLibrary.shared().performChanges({
-                let creation = PHAssetCreationRequest.forAsset()
-                let resourceOptions = PHAssetResourceCreationOptions()
-                // Pass the still data verbatim (no UIImage round-trip) so EXIF
-                // and GPS metadata survive intact.
-                creation.addResource(with: .photo, data: stillData, options: resourceOptions)
-                // Preserve capture date and favorite status on the new still.
-                creation.creationDate = asset.creationDate
-                creation.location = asset.location
-                creation.isFavorite = asset.isFavorite
-                PHAssetChangeRequest.deleteAssets([asset] as NSArray)
+                for job in jobs {
+                    let creation = PHAssetCreationRequest.forAsset()
+                    let resourceOptions = PHAssetResourceCreationOptions()
+                    // Pass the still data verbatim (no UIImage round-trip) so
+                    // EXIF and GPS metadata survive intact.
+                    creation.addResource(with: .photo, data: job.data, options: resourceOptions)
+                    // Preserve capture date, location, and favorite status.
+                    creation.creationDate = job.asset.creationDate
+                    creation.location = job.asset.location
+                    creation.isFavorite = job.asset.isFavorite
+                }
+                // One batched deletion for the whole set → one confirmation.
+                let originals = jobs.map { $0.asset } as NSArray
+                PHAssetChangeRequest.deleteAssets(originals)
             }) { success, error in
                 if let error {
                     continuation.resume(throwing: error)
