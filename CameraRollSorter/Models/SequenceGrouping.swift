@@ -40,11 +40,45 @@ nonisolated struct CandidateComparison: Hashable, Sendable {
     }
 }
 
+/// Which way the incremental scan walks the timeline.
+/// - `newer`: start at the oldest in-window photo and move toward newer ones.
+/// - `older`: start at the newest in-window photo and move toward older ones.
+nonisolated enum ScanDirection: String, Sendable {
+    case newer
+    case older
+}
+
 nonisolated enum SequenceGrouping {
     /// Sort photos into the canonical scan order (by date, id as tiebreak).
     /// Callers that scan incrementally sort once and reuse the array.
     static func sortedByDate(_ photos: [TimedPhoto]) -> [TimedPhoto] {
         photos.sorted { $0.date == $1.date ? $0.id < $1.id : $0.date < $1.date }
+    }
+
+    /// Build the ordered array of photos to scan, applying a scan `direction`
+    /// and an optional `startDate` window. The first element is the anchor the
+    /// scan begins at; batches walk forward from index 0.
+    ///
+    /// - `newer`: keep photos on/after `startDate`, ordered oldest → newest.
+    /// - `older`: keep photos on/before `startDate`, ordered newest → oldest.
+    ///
+    /// `neighborhoods(in:anchorRange:)` looks both directions in time, so the
+    /// grouping result is identical regardless of order — only the traversal
+    /// order (which photos get scanned first) changes.
+    static func scanOrdered(
+        _ photos: [TimedPhoto],
+        direction: ScanDirection,
+        startDate: Date?
+    ) -> [TimedPhoto] {
+        let windowed: [TimedPhoto]
+        switch direction {
+        case .newer:
+            windowed = startDate.map { start in photos.filter { $0.date >= start } } ?? photos
+        case .older:
+            windowed = startDate.map { start in photos.filter { $0.date <= start } } ?? photos
+        }
+        let ascending = sortedByDate(windowed)
+        return direction == .newer ? ascending : ascending.reversed()
     }
 
     // Each photo gets up to five nearest neighbors, strictly less than 24 hours

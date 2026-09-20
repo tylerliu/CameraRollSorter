@@ -44,7 +44,11 @@ let boundary = [SimilarityPair(first: "0", second: "1", distance: 0.5)]
 check(SimilarityGrouping.groups(photos: chainPhotos, pairs: boundary, threshold: 0.5).first?.photos.count == 2, "Threshold includes equal distance and omits isolated photos")
 let bad = [SimilarityPair(first: "0", second: "1", distance: .nan), SimilarityPair(first: "2", second: "missing", distance: 0.1)]
 check(SimilarityGrouping.groups(photos: chainPhotos, pairs: bad, threshold: 0.5).isEmpty, "Invalid scores and unknown assets do not join groups")
-check(SimilarityGrouping.groups(photos: chainPhotos.reversed(), pairs: chainPairs.reversed(), threshold: 0.5).first?.photos.map(\.id) == joined.first?.photos.map(\.id), "Group ordering is deterministic")
+check(Set(SimilarityGrouping.groups(photos: chainPhotos.reversed(), pairs: chainPairs.reversed(), threshold: 0.5).first?.photos.map(\.id) ?? []) == Set(joined.first?.photos.map(\.id) ?? []), "Group membership is stable regardless of input order")
+// Groups now follow the caller's photo order (scan order), so members read in
+// the order photos were passed in.
+check(SimilarityGrouping.groups(photos: chainPhotos, pairs: chainPairs, threshold: 0.5).first?.photos.map(\.id) == chainPhotos.map(\.id), "Group members follow input (scan) order")
+check(SimilarityGrouping.groups(photos: chainPhotos.reversed(), pairs: chainPairs, threshold: 0.5).first?.photos.map(\.id) == chainPhotos.reversed().map(\.id), "Reversed input yields reversed member order")
 
 let triangle = [SimilarityPair(first: "0", second: "1", distance: 0.1), SimilarityPair(first: "1", second: "2", distance: 0.2), SimilarityPair(first: "0", second: "2", distance: 0.4)]
 let tree = SimilarityGrouping.minimumSpanningTree(photos: Array(chainPhotos.prefix(3)), pairs: triangle, threshold: 0.5)
@@ -173,3 +177,37 @@ check(Set(SequenceGrouping.comparisons(batchA)).contains(boundaryPair), "Batch a
 // nil range equals the whole array.
 let allViaNil = SequenceGrouping.neighborhoods(in: sortedDense, anchorRange: nil)
 check(SequenceGrouping.comparisons(allViaNil).count == SequenceGrouping.comparisons(SequenceGrouping.groups(densePhotos)).count, "nil anchorRange matches groups(_:)")
+
+// MARK: - Scan order (direction + start-date window)
+
+let orderPhotos = (0..<6).map { photo(String($0), Double($0 * 10)) } // dates 0,10,...,50
+
+// Direction newer → ascending by date.
+let newerAll = SequenceGrouping.scanOrdered(orderPhotos, direction: .newer, startDate: nil).map(\.id)
+check(newerAll == ["0", "1", "2", "3", "4", "5"], "Newer direction scans oldest first")
+
+// Direction older → descending by date.
+let olderAll = SequenceGrouping.scanOrdered(orderPhotos, direction: .older, startDate: nil).map(\.id)
+check(olderAll == ["5", "4", "3", "2", "1", "0"], "Older direction scans newest first")
+
+// Flipping direction reverses the whole ordered array.
+check(newerAll == olderAll.reversed(), "Direction flip reverses order")
+
+// Start date, newer: keep on/after the start, oldest first.
+let startNewer = SequenceGrouping.scanOrdered(orderPhotos, direction: .newer, startDate: Date(timeIntervalSince1970: 25)).map(\.id)
+check(startNewer == ["3", "4", "5"], "Newer + start keeps on/after start, ascending")
+
+// Start date, older: keep on/before the start, newest first.
+let startOlder = SequenceGrouping.scanOrdered(orderPhotos, direction: .older, startDate: Date(timeIntervalSince1970: 25)).map(\.id)
+check(startOlder == ["2", "1", "0"], "Older + start keeps on/before start, descending")
+
+// Start date exactly on a photo's date includes that photo (boundary inclusive).
+let boundaryNewer = SequenceGrouping.scanOrdered(orderPhotos, direction: .newer, startDate: Date(timeIntervalSince1970: 30)).map(\.id)
+check(boundaryNewer.first == "3", "Start date boundary is inclusive (newer)")
+let boundaryOlder = SequenceGrouping.scanOrdered(orderPhotos, direction: .older, startDate: Date(timeIntervalSince1970: 30)).map(\.id)
+check(boundaryOlder.first == "3", "Start date boundary is inclusive (older)")
+
+// Grouping is direction-agnostic: same comparisons regardless of scan order.
+let dirCompNewer = Set(SequenceGrouping.comparisons(SequenceGrouping.neighborhoods(in: SequenceGrouping.scanOrdered(densePhotos, direction: .newer, startDate: nil), anchorRange: nil)))
+let dirCompOlder = Set(SequenceGrouping.comparisons(SequenceGrouping.neighborhoods(in: SequenceGrouping.scanOrdered(densePhotos, direction: .older, startDate: nil), anchorRange: nil)))
+check(dirCompNewer == dirCompOlder, "Comparisons are identical regardless of scan direction")

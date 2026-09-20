@@ -11,7 +11,11 @@ nonisolated enum SimilarityGrouping {
     // Connected components of accepted candidate edges. Five limits the search,
     // not the resulting component size. Endpoints need not directly match.
     static func groups(photos: [TimedPhoto], pairs: [SimilarityPair], threshold: Float) -> [PhotoSequence] {
-        let ordered = photos.sorted { $0.date == $1.date ? $0.id < $1.id : $0.date < $1.date }
+        // Preserve the caller's photo order — it is the scan order (direction +
+        // start-date aware). The returned groups follow that order so newly
+        // scanned groups append to the *back* of the list rather than sorting
+        // themselves by date. Members within a group also keep this order.
+        let ordered = photos
         let indices = Dictionary(uniqueKeysWithValues: ordered.enumerated().map { ($0.element.id, $0.offset) })
         var parents = Array(ordered.indices)
         func root(_ index: Int) -> Int {
@@ -29,10 +33,12 @@ nonisolated enum SimilarityGrouping {
         }
         var components: [Int: [TimedPhoto]] = [:]
         for index in ordered.indices { components[root(index), default: []].append(ordered[index]) }
-        return components.keys.sorted().compactMap { key in
-            guard let members = components[key], members.count > 1 else { return nil }
-            return PhotoSequence(photos: members)
-        }
+        // Order groups by the position of their earliest member in the scan
+        // order, so the list reads front-to-back in the direction being scanned.
+        return components
+            .filter { $0.value.count > 1 }
+            .sorted { $0.key < $1.key }
+            .map { PhotoSequence(photos: $0.value) }
     }
     // Kruskal over measured, qualifying candidate edges only. No new image
     // comparisons and no assumed edges between untested pairs.

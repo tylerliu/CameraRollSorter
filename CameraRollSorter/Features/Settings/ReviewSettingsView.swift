@@ -4,7 +4,7 @@ struct ReviewSettingsView: View {
     @AppStorage("review.distanceThreshold") private var threshold = 0.4
     @AppStorage("review.geoGateEnabled") private var geoGateEnabled = true
     @AppStorage("review.geoGateKilometers") private var geoGateKilometers = 1.0
-    @AppStorage("review.initialGroupTarget") private var initialGroupTarget = 500
+    @AppStorage("review.initialGroupTarget") private var initialGroupTarget = 200
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -29,7 +29,7 @@ struct ReviewSettingsView: View {
                     )
                     .accessibilityLabel("Groups to find before pausing the initial scan")
                     .accessibilityValue("\(initialGroupTarget)")
-                    Text("The scan pauses once this many similar-photo groups are found, so results appear quickly. Scrolling to the end scans more. Default 500. Changes take effect on the next scan.")
+                    Text("The scan pauses once this many similar-photo groups are found, so results appear quickly. Scrolling to the end scans more. Default 200. Changes take effect on the next scan.")
                         .foregroundStyle(.secondary)
                 }
                 Section("Location shortcut") {
@@ -44,7 +44,7 @@ struct ReviewSettingsView: View {
                         .foregroundStyle(.secondary)
                 }
                 Section("Scan scope") {
-                    Text("All accessible photos in your camera roll, regardless of capture date.")
+                    Text("Scan direction and start date are set at the top of the Similar photos list, so you can adjust them while reviewing.")
                     Text("With limited access, only the photos you allow can be scanned.")
                         .foregroundStyle(.secondary)
                 }
