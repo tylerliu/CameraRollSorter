@@ -40,13 +40,15 @@ struct SimilarPhotosView: View {
         )
     }
 
-    /// A sensible default start date for the current direction that keeps the
-    /// window non-empty: the end of the library span the scan starts from.
-    /// "Newest first" (tag "older") starts at the newest photo and scans back;
-    /// "Oldest first" (tag "newer") starts at the oldest photo and scans forward.
+    /// Default start date when first enabling "from date". Seeded to the
+    /// midpoint of the library span so enabling it actually narrows the window
+    /// (rather than the extreme, which would equal the whole library and look
+    /// like a no-op). The user then drags the picker to fine-tune.
     private func defaultStart(for direction: String) -> Date {
         guard let range = library.libraryDateRange else { return Date() }
-        return direction == "older" ? range.upperBound : range.lowerBound
+        let mid = range.lowerBound.timeIntervalSince1970
+            + (range.upperBound.timeIntervalSince1970 - range.lowerBound.timeIntervalSince1970) / 2
+        return Date(timeIntervalSince1970: mid)
     }
 
     /// Row date label: month/day and time, adding the year only when the photo
@@ -165,22 +167,18 @@ struct SimilarPhotosView: View {
                                 }
                             }
                         }
-                        // Load more when the list nears its end.
-                        .onAppear {
-                            if index >= library.groups.count - 3 { library.scanMore() }
-                        }
+                        // Keep a rolling buffer of groups scanned ahead of the
+                        // row being viewed.
+                        .onAppear { library.scanMore(currentIndex: index) }
                     }
                 }
 
-                // Bottom status row: spinner while a batch runs, or a tap to
-                // continue when paused with more to scan.
+                // Bottom status row: when more remains, show a spinner and keep
+                // scanning automatically — reaching the bottom resumes a paused
+                // scan, so there's no manual "scan more" step.
                 if library.hasMoreToScan {
-                    if library.isScanningBatch {
-                        HStack { ProgressView(); Text("Scanning more…").font(.caption).foregroundStyle(.secondary) }
-                    } else {
-                        Button("Scan more") { library.scanMore() }
-                            .font(.caption)
-                    }
+                    HStack { ProgressView(); Text("Scanning more…").font(.caption).foregroundStyle(.secondary) }
+                        .onAppear { library.scanMore(currentIndex: library.groups.count) }
                 }
             }
         }

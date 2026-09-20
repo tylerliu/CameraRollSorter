@@ -69,7 +69,16 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
     // scan direction reverses this (the visible list reverses) while continued
     // scanning keeps appending to the end.
     private var scanProgression: [String] = []
-    private let batchSize = 256                 // anchors processed per incremental step
+    // Furthest group row the viewer has reached. The scan keeps ~targetGroupCount
+    // groups scanned ahead of this, so the buffer rolls forward as you scroll.
+    private var scanAheadOf = 0
+    // Anchors processed per incremental step. The initial scan uses a larger
+    // batch to fill the first results quickly; once scanned, forward scanning
+    // (driven by scrolling) uses a smaller batch so it stays responsive and
+    // results appear more incrementally.
+    private let initialBatchSize = 256
+    private let forwardBatchSize = 64
+    private var batchSize: Int { hasScanned ? forwardBatchSize : initialBatchSize }
     // Soft stop for the initial scan: pause once this many groups exist. User
     // configurable in review settings (default 200).
     private var targetGroupCount: Int {
@@ -142,6 +151,7 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
         sortedPhotos = []
         scannedIDs = []
         scanProgression = []
+        scanAheadOf = 0
         isScanning = true
         scanTask = Task {
             let result = await scanner.scan()
@@ -160,40 +170,45 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
             // Capture the geo-gate config this scan runs under.
             recordGeoConfig()
             updateSummary()
-            // Process batches until the soft group cap or the library is done.
-            await runBatches(untilGroupCap: true)
+            // Fill the initial buffer of groups from the front of the list.
+            scanAheadOf = 0
+            await runBatches()
             guard !Task.isCancelled else { return }
             hasScanned = true
             isScanning = false
         }
     }
 
-    /// Process the next batch of photos on demand (called as the list scrolls
-    /// near the end). No-op while a batch is already running or nothing remains.
-    func scanMore() {
-        // No-op if we can't read, nothing remains, or a scan loop is already
-        // running (initial scan or a prior scanMore).
+    /// Keep the scanned list filled to ~`targetGroupCount` groups AHEAD of the
+    /// row the user is viewing (a rolling window, not a hard total cap). Called
+    /// as rows appear. No-op while a batch is already running or nothing
+    /// remains. `currentIndex` is the group row that triggered this.
+    func scanMore(currentIndex: Int = 0) {
+        // Track the furthest-viewed position so an in-flight scan loop extends
+        // its buffer target as the user scrolls (rather than stopping short).
+        scanAheadOf = max(scanAheadOf, currentIndex)
         guard canRead, hasMoreToScan, !isScanning else { return }
         isScanning = true
         scanTask = Task {
-            // Scroll-driven: advance one batch past the cap so the list keeps
-            // filling as the user scrolls beyond the initial group target.
-            await runBatches(untilGroupCap: false, maxBatches: 1)
+            // Scan until there are `targetGroupCount` groups beyond the viewed
+            // position, or the library is exhausted. Keeps the buffer ahead of
+            // the viewer so the "Scan more" fallback isn't needed when scrolling.
+            await runBatches()
             isScanning = false
         }
     }
 
     /// Measure successive `batchSize` slices of `sortedPhotos`, appending pairs
-    /// and regrouping after each. Stops when the library is exhausted or, if
-    /// `untilGroupCap`, once `targetGroupCount` groups exist.
-    private func runBatches(untilGroupCap: Bool, maxBatches: Int = .max) async {
+    /// and regrouping after each. Stops when the library is exhausted or once
+    /// there are `targetGroupCount` groups AHEAD of the viewer's position
+    /// (`scanAheadOf`, updated live by `scanMore` as the list scrolls) — a
+    /// rolling buffer, not a hard total cap.
+    private func runBatches() async {
         let token = revision
-        var processed = 0
         while hasMoreToScan {
             if Task.isCancelled || revision != token { return }
-            if untilGroupCap && groups.count >= targetGroupCount { break }
-            if processed >= maxBatches { break }
-            processed += 1
+            // Enough buffer ahead of the current position → pause.
+            if groups.count - scanAheadOf >= targetGroupCount { break }
 
             // Next batch: the first `batchSize` still-unscanned photos in scan
             // order. Usually a contiguous front run, but after a direction flip
@@ -205,8 +220,13 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
             for anchorIndex in batchAnchorIndices {
                 neighborhoods += SequenceGrouping.neighborhoods(in: sortedPhotos, anchorRange: anchorIndex..<(anchorIndex + 1))
             }
-            let batchComparisons = geoFilteredComparisons(for: neighborhoods)
             let batchAnchorIDs = Set(batchAnchorIndices.map { sortedPhotos[$0].id })
+            // Reuse the measurement cache: skip pairs we already have scores
+            // for. After a direction/start change we clear the display but keep
+            // `pairs`, so re-covering overlapping photos costs no Vision work.
+            let measured = Set(pairs.map { CandidateComparison($0.first, $0.second) })
+            let batchComparisons = geoFilteredComparisons(for: neighborhoods)
+                .filter { !measured.contains($0) }
 
             isScanningBatch = true
             let done = scannedIDs.count + batchAnchorIDs.count
@@ -257,19 +277,20 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
     func applyThreshold() {
         threshold = Float(UserDefaults.standard.object(forKey: "review.distanceThreshold") as? Double ?? 0.4)
         // Group in *scan-progression* order so newly scanned groups append to
-        // the back of the list and a direction flip reverses the visible list.
-        // Only scanned photos can form groups (unscanned ones have no measured
-        // pairs), so grouping over the progression is complete.
+        // the back of the list. Only photos actually scanned (in progression)
+        // anchor the display — this is what lets a window change CLEAR the view
+        // and rebuild from the new front even though `pairs` is still cached.
         let byID = Dictionary(photos.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let shown = Set(scanProgression)
         var seen = Set<String>()
         var ordered: [TimedPhoto] = []
         for id in scanProgression where seen.insert(id).inserted {
             if let photo = byID[id] { ordered.append(photo) }
         }
-        // Include pair endpoints that were pulled in as neighbors but weren't
-        // themselves anchors, so a group never drops a member. They attach to
-        // their component, whose position is governed by its earliest anchor.
-        for pair in pairs {
+        // Pull in neighbors of scanned photos so a group never drops a member,
+        // but ONLY when the neighbor's pair touches a scanned (shown) photo.
+        // Pairs among not-yet-shown photos stay hidden until they're scanned.
+        for pair in pairs where shown.contains(pair.first) || shown.contains(pair.second) {
             for id in [pair.first, pair.second] where seen.insert(id).inserted {
                 if let photo = byID[id] { ordered.append(photo) }
             }
@@ -337,81 +358,80 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
         let newDirection = Self.scanDirectionSetting
         let newStart = Self.scanStartDateSetting
 
-        // Scan-scope change (direction and/or start date). Two-phase so rapid
-        // adjustments don't churn results:
-        //   • Immediately: apply the additive part — reorder to the new
-        //     direction and start scanning any newly-in-window photos — while
-        //     KEEPING currently-shown results visible (nothing dropped yet).
-        //   • After 2s of no further change: prune everything now out-of-window.
-        // Because reconciliation is set-based, retained pairs are reused for
-        // free if a later change brings their photos back in-window.
+        // Scan-scope change (direction and/or start date). Two layers:
+        //   • View: the shown groups are no longer valid for the new setting, so
+        //     clear the display and re-populate from the new window's front
+        //     (e.g. oldest first when flipping to Old→New).
+        //   • Data: keep the measured `pairs` as a cache. The fresh scan reuses
+        //     them (no Vision re-run for overlapping photos), so the list fills
+        //     quickly; and if the setting changes again within 2s the cache is
+        //     still intact. A debounced prune drops out-of-window cache entries
+        //     once changes settle.
         if newDirection != lastScanDirection || newStart != lastScanStartDate,
            hasScanned || isScanning {
-            expandScanWindow(direction: newDirection, startDate: newStart,
-                             flipped: newDirection != lastScanDirection)
-            scheduleWindowPrune(direction: newDirection, startDate: newStart)
+            lastScanDirection = newDirection
+            lastScanStartDate = newStart
+            restartScanForWindow(direction: newDirection, startDate: newStart)
+            scheduleCachePrune(direction: newDirection, startDate: newStart)
+            return
         }
 
         lastScanDirection = newDirection
         lastScanStartDate = newStart
 
-        // Threshold change only regroups existing scores.
+        // Threshold / group-target change only: regroup, resume if below buffer.
         applyThreshold()
-        // Resume scanning if there are unscanned photos and we're below the cap.
         if hasMoreToScan, groups.count < targetGroupCount, !isScanning {
             isScanning = true
             scanTask = Task {
-                await runBatches(untilGroupCap: true)
+                await runBatches()
                 isScanning = false
             }
         }
     }
 
-    /// Additive phase of a window change: rebuild the traversal order to the new
-    /// window UNION the photos currently shown, so new results populate while
-    /// existing ones stay visible. Nothing is dropped here — the prune (which
-    /// removes out-of-window results) is deferred by `scheduleWindowPrune`.
-    private func expandScanWindow(direction: ScanDirection, startDate: Date?, flipped: Bool) {
-        let window = SequenceGrouping.scanOrdered(photos, direction: direction, startDate: startDate)
-        let windowIDs = Set(window.map(\.id))
-        // Currently-shown photos to keep visible during the grace period: any
-        // scanned photo (in progression) not already in the new window.
-        let extraIDs = Set(scanProgression).subtracting(windowIDs)
-        let byID = Dictionary(photos.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-        let extras = SequenceGrouping.scanOrdered(
-            extraIDs.compactMap { byID[$0] }, direction: direction, startDate: nil
-        )
-        // New window first (front = next to scan), retained extras after.
-        sortedPhotos = window + extras
-        if flipped { scanProgression.reverse() }
-        progress = "Scan window updated"
+    /// Re-populate the view for a new scan window. Clears the displayed
+    /// progression and scan cursor so the list rebuilds from the new front, but
+    /// KEEPS `pairs` (the measurement cache) so re-covering overlapping photos
+    /// costs no Vision work. Starts scanning up to the group cap.
+    private func restartScanForWindow(direction: ScanDirection, startDate: Date?) {
+        scanTask?.cancel()
+        sortedPhotos = SequenceGrouping.scanOrdered(photos, direction: direction, startDate: startDate)
+        // View reset: forget what's "shown as scanned" so the display rebuilds
+        // from the new front. `pairs` stays as the reuse cache.
+        scannedIDs = []
+        scanProgression = []
+        scanAheadOf = 0
+        revision = UUID()
+        applyThreshold()   // clears the visible list immediately
+        progress = "Reading photo dates…"
+        isScanning = true
+        scanTask = Task {
+            await runBatches()
+            isScanning = false
+        }
     }
 
-    /// Debounced destructive prune: 2s after the last scan-scope change, drop
-    /// every result whose photo is no longer in the final window. Reruns reset
-    /// the timer, so a burst of adjustments prunes once, at the end.
-    private func scheduleWindowPrune(direction: ScanDirection, startDate: Date?) {
+    /// Debounced data-layer cleanup: 2s after the last scan-scope change, drop
+    /// cached pairs for photos no longer in the window. Reruns reset the timer,
+    /// so a burst of adjustments prunes once, at the end — keeping the previous
+    /// window available for reuse in the meantime.
+    private func scheduleCachePrune(direction: ScanDirection, startDate: Date?) {
         windowPruneTask?.cancel()
         windowPruneTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             guard !Task.isCancelled else { return }
-            await self?.pruneToWindow(direction: direction, startDate: startDate)
+            await self?.pruneCacheToWindow(direction: direction, startDate: startDate)
         }
     }
 
-    /// Prune all state to exactly the given window. Safe to run late: it only
-    /// removes photos that are still out-of-window at prune time.
-    private func pruneToWindow(direction: ScanDirection, startDate: Date?) {
-        // Only prune if this is still the active window (settings didn't change
-        // again to something else after the timer was set).
+    /// Drop cached pairs/photos no longer in the given window. Only runs if the
+    /// window is still current (settings didn't change again afterward).
+    private func pruneCacheToWindow(direction: ScanDirection, startDate: Date?) {
         guard direction == lastScanDirection, startDate == lastScanStartDate else { return }
-        let keep = SequenceGrouping.scanOrdered(photos, direction: direction, startDate: startDate)
-        let keepIDs = Set(keep.map(\.id))
-        sortedPhotos = keep
+        let keepIDs = Set(SequenceGrouping.scanOrdered(photos, direction: direction, startDate: startDate).map(\.id))
         pairs.removeAll { !keepIDs.contains($0.first) || !keepIDs.contains($0.second) }
-        scannedIDs.formIntersection(keepIDs)
-        scanProgression.removeAll { !keepIDs.contains($0) }
-        applyThreshold()
+        unavailablePhotoIDs.formIntersection(keepIDs)
     }
 
     func scores(for group: PhotoSequence) -> [SimilarityPair] {
