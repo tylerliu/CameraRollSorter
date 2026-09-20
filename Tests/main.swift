@@ -152,3 +152,24 @@ check(wide.contains(CandidateComparison("near1", "far")), "Far pair kept when ra
 // TimedPhoto without coordinates reports hasCoordinate == false.
 check(!geoPhoto("x", 0, nil, nil).hasCoordinate, "Missing coordinate flagged")
 check(geoPhoto("y", 0, 1, 2).hasCoordinate, "Present coordinate flagged")
+
+// MARK: - Incremental (ranged) neighborhood building
+
+// A dense run of 10 photos 1s apart: batched neighborhoods across ranges must
+// yield the same set of comparisons as one full pass (no boundary pairs lost).
+let densePhotos = (0..<10).map { photo(String($0), Double($0)) }
+let sortedDense = SequenceGrouping.sortedByDate(densePhotos)
+
+let fullComparisons = Set(SequenceGrouping.comparisons(SequenceGrouping.groups(densePhotos)))
+let batchA = SequenceGrouping.neighborhoods(in: sortedDense, anchorRange: 0..<5)
+let batchB = SequenceGrouping.neighborhoods(in: sortedDense, anchorRange: 5..<10)
+let batchedComparisons = Set(SequenceGrouping.comparisons(batchA) + SequenceGrouping.comparisons(batchB))
+check(batchedComparisons == fullComparisons, "Batched ranges cover the same comparisons as a full pass")
+
+// A single batch reaches neighbors outside its own range (boundary complete).
+let boundaryPair = CandidateComparison("4", "5")
+check(Set(SequenceGrouping.comparisons(batchA)).contains(boundaryPair), "Batch anchors compare across the range boundary")
+
+// nil range equals the whole array.
+let allViaNil = SequenceGrouping.neighborhoods(in: sortedDense, anchorRange: nil)
+check(SequenceGrouping.comparisons(allViaNil).count == SequenceGrouping.comparisons(SequenceGrouping.groups(densePhotos)).count, "nil anchorRange matches groups(_:)")

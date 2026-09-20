@@ -4,6 +4,7 @@ struct ReviewSettingsView: View {
     @AppStorage("review.distanceThreshold") private var threshold = 0.4
     @AppStorage("review.geoGateEnabled") private var geoGateEnabled = true
     @AppStorage("review.geoGateKilometers") private var geoGateKilometers = 1.0
+    @AppStorage("review.initialGroupTarget") private var initialGroupTarget = 500
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -15,6 +16,20 @@ struct ReviewSettingsView: View {
                         .accessibilityLabel("Maximum Vision distance")
                         .accessibilityValue(threshold.formatted(.number.precision(.fractionLength(2))))
                     Text("Default 0.40. Lower is stricter. Pairs at or below this distance join a group. Changes regroup existing scores when you close settings.")
+                        .foregroundStyle(.secondary)
+                }
+                Section("Initial scan") {
+                    LabeledContent("Groups before pausing", value: "\(initialGroupTarget)")
+                    Slider(
+                        value: Binding(
+                            get: { Double(initialGroupTarget) },
+                            set: { initialGroupTarget = Int($0) }
+                        ),
+                        in: 100...2000, step: 100
+                    )
+                    .accessibilityLabel("Groups to find before pausing the initial scan")
+                    .accessibilityValue("\(initialGroupTarget)")
+                    Text("The scan pauses once this many similar-photo groups are found, so results appear quickly. Scrolling to the end scans more. Default 500. Changes take effect on the next scan.")
                         .foregroundStyle(.secondary)
                 }
                 Section("Location shortcut") {

@@ -7,6 +7,14 @@ import SwiftUI
 struct SimilarPhotosView: View {
     let library: PhotoLibraryModel
 
+    /// "12 groups" once fully scanned, or "12 groups & more" while photos
+    /// remain to be scanned.
+    private var countLabel: String {
+        let n = library.groups.count
+        let unit = n == 1 ? "group" : "groups"
+        return library.hasMoreToScan ? "\(n) \(unit) & more" : "\(n) \(unit)"
+    }
+
     var body: some View {
         List {
             Section {
@@ -15,14 +23,14 @@ struct SimilarPhotosView: View {
                 if let error = library.analysisError { Text(error).foregroundStyle(.secondary) }
             }
             Section {
-                if library.isScanning {
-                    ProgressView(library.progress)
+                // Count is shown as soon as scanning starts — no "X of N"
+                // progress, which is meaningless for a partial scan. "0 groups
+                // & more" is the honest starting state.
+                if library.isScanning || library.hasScanned || !library.groups.isEmpty {
+                    Text(countLabel).font(.caption).foregroundStyle(.secondary)
                 }
                 if library.hasScanned || !library.groups.isEmpty {
-                    if !library.summary.isEmpty {
-                        Text(library.summary).font(.caption).foregroundStyle(.secondary)
-                    }
-                    if library.hasScanned && library.groups.isEmpty {
+                    if library.hasScanned && library.groups.isEmpty && !library.isScanning {
                         ContentUnavailableView(
                             "No groups found",
                             systemImage: "photo.stack",
@@ -31,7 +39,7 @@ struct SimilarPhotosView: View {
                                 : "Similarity analysis did not finish. Pull to refresh to retry.")
                         )
                     }
-                    ForEach(library.groups) { group in
+                    ForEach(Array(library.groups.enumerated()), id: \.element.id) { index, group in
                         NavigationLink {
                             PhotoChooserView(sequence: group, measuredPairs: library.scores(for: group), library: library)
                         } label: {
@@ -45,6 +53,21 @@ struct SimilarPhotosView: View {
                                 }
                             }
                         }
+                        // Load more when the list nears its end.
+                        .onAppear {
+                            if index >= library.groups.count - 3 { library.scanMore() }
+                        }
+                    }
+                }
+
+                // Bottom status row: spinner while a batch runs, or a tap to
+                // continue when paused with more to scan.
+                if library.hasMoreToScan {
+                    if library.isScanningBatch {
+                        HStack { ProgressView(); Text("Scanning more…").font(.caption).foregroundStyle(.secondary) }
+                    } else {
+                        Button("Scan more") { library.scanMore() }
+                            .font(.caption)
                     }
                 }
             }

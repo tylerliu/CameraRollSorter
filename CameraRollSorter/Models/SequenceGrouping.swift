@@ -41,12 +41,25 @@ nonisolated struct CandidateComparison: Hashable, Sendable {
 }
 
 nonisolated enum SequenceGrouping {
+    /// Sort photos into the canonical scan order (by date, id as tiebreak).
+    /// Callers that scan incrementally sort once and reuse the array.
+    static func sortedByDate(_ photos: [TimedPhoto]) -> [TimedPhoto] {
+        photos.sorted { $0.date == $1.date ? $0.id < $1.id : $0.date < $1.date }
+    }
+
     // Each photo gets up to five nearest neighbors, strictly less than 24 hours
     // away in either direction. Neighborhoods may overlap; they are not bursts.
     static func groups(_ photos: [TimedPhoto]) -> [CandidateNeighborhood] {
-        let sorted = photos.sorted { $0.date == $1.date ? $0.id < $1.id : $0.date < $1.date }
+        neighborhoods(in: sortedByDate(photos), anchorRange: nil)
+    }
+
+    /// Build neighborhoods for anchors in `anchorRange` of an already-sorted
+    /// array. Neighbors may lie outside the range, so pairs that straddle a
+    /// batch boundary are still complete. Passing nil covers all anchors.
+    static func neighborhoods(in sorted: [TimedPhoto], anchorRange: Range<Int>?) -> [CandidateNeighborhood] {
+        let range = anchorRange ?? sorted.indices.startIndex..<sorted.indices.endIndex
         var result: [CandidateNeighborhood] = []
-        for index in sorted.indices {
+        for index in range {
             let anchor = sorted[index]
             var left = index - 1
             var right = index + 1

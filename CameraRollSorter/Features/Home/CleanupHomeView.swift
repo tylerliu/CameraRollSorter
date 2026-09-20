@@ -26,8 +26,12 @@ struct CleanupHomeView: View {
             }
             .sheet(isPresented: $showsSettings, onDismiss: library.applySettings) { ReviewSettingsView() }
             .background {
-                LimitedLibraryPicker(isPresented: $showsLimitedPicker, onFinished: library.refresh)
-                    .frame(width: 0, height: 0)
+                LimitedLibraryPicker(isPresented: $showsLimitedPicker) {
+                    // Selecting more photos under limited access is an add,
+                    // handled incrementally — not a full rescan.
+                    Task { await library.syncLibrary() }
+                }
+                .frame(width: 0, height: 0)
             }
         }
         .task {
@@ -83,16 +87,17 @@ struct CleanupHomeView: View {
 
     /// Subtitle for the Similar photos row: scan progress or a result summary.
     private var similarDetail: CategoryRow.Detail {
-        if library.isScanning {
-            return .progress(library.progress)
+        // Before any scan: prompt to scan. Otherwise a live count with "& more"
+        // while photos remain — no "X of N" progress, meaningless for partial.
+        if !library.isScanning && !library.hasScanned && library.groups.isEmpty {
+            return .text("Tap to scan")
         }
-        if library.hasScanned {
-            if library.groups.isEmpty {
-                return .text("No groups found")
-            }
-            return .count(library.groups.count, unit: library.groups.count == 1 ? "group" : "groups")
+        if library.hasScanned && library.groups.isEmpty && !library.hasMoreToScan {
+            return .text("No groups found")
         }
-        return .text("Tap to scan")
+        let unit = library.groups.count == 1 ? "group" : "groups"
+        let suffix = library.hasMoreToScan ? " & more" : ""
+        return .text("\(library.groups.count) \(unit)\(suffix)")
     }
 
     private var accessSection: some View {
