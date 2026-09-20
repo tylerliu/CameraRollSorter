@@ -73,16 +73,21 @@ struct CleanupHomeView: View {
         }
     }
 
-    /// Subtitle for the Live → Still row: scan progress or the count found.
+    /// Subtitle for the Live → Still row: scan progress or a live count with
+    /// "& more" while classification is still in progress.
     private var liveToStillDetail: CategoryRow.Detail {
         if liveToStill.isScanning && liveToStill.items.isEmpty {
             return .progress("")
         }
-        if liveToStill.hasScanned {
-            if liveToStill.items.isEmpty { return .text("None found") }
-            return .count(liveToStill.items.count, unit: liveToStill.items.count == 1 ? "photo" : "photos")
+        if !liveToStill.hasScanned && liveToStill.items.isEmpty {
+            return .text("Tap to scan")
         }
-        return .text("Tap to scan")
+        if liveToStill.hasScanned && liveToStill.items.isEmpty && !liveToStill.hasMoreToScan {
+            return .text("None found")
+        }
+        let unit = liveToStill.items.count == 1 ? "photo" : "photos"
+        let suffix = liveToStill.hasMoreToScan ? " & more" : ""
+        return .text("\(liveToStill.items.count) \(unit)\(suffix)")
     }
 
     /// Subtitle for the Similar photos row: scan progress or a result summary.

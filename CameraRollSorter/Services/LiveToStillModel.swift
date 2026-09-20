@@ -41,10 +41,52 @@ final class LiveToStillModel {
     private let scanner = LivePhotoScanner()
     private var scanTask: Task<Void, Never>?
 
+    // Incremental scan state. The candidate Live Photos are fetched once (fast,
+    // metadata only) and ordered by the direction/start-date window. They are
+    // then classified in batches on demand so a large library never stalls: the
+    // grid shows results as they stream in and keeps a rolling buffer ahead of
+    // the scroll position.
+    private var allCandidates: [TimedPhoto] = [] // full fetched candidate set (unwindowed)
+    private var candidates: [TimedPhoto] = []    // ordered+windowed candidate Live Photos
+    private var classifiedCount = 0              // how far along `candidates` we've classified
+    private let batchSize = 200                 // candidates classified per step
+    // Furthest grid row the viewer reached; keep this many items classified
+    // ahead of it.
+    private var scanAheadOf = 0
+    private let targetBufferAhead = 400
+    private var lastScanDirection: ScanDirection = .older
+    private var lastScanStartDate: Date?
+
     var canRead: Bool { authorization == .authorized || authorization == .limited }
 
-    /// Scan the library for convertible Live Photos. Cheap metadata-only pass;
-    /// runs on its own actor so it never blocks similarity analysis.
+    /// True while there are still unclassified candidates in the window.
+    var hasMoreToScan: Bool { classifiedCount < candidates.count }
+
+    /// Capture-date span of all Live Photo candidates, to bound/seed the
+    /// start-date picker. nil before the first scan or when there are none.
+    var libraryDateRange: ClosedRange<Date>? {
+        guard let min = allCandidates.map(\.date).min(),
+              let max = allCandidates.map(\.date).max(), min <= max else { return nil }
+        return min...max
+    }
+
+    // Per-view scan-window state, bound to the pinned ScanControlsHeader. NOT
+    // shared with the Similar photos screen — each list has its own window.
+    var scanDirectionRaw = "older"
+    var scanStartEnabled = false
+    var scanStartInterval = 0.0
+
+    private var scanDirectionSetting: ScanDirection {
+        ScanDirection(rawValue: scanDirectionRaw) ?? .older
+    }
+    private var scanStartDateSetting: Date? {
+        guard scanStartEnabled, scanStartInterval > 0 else { return nil }
+        return Date(timeIntervalSince1970: scanStartInterval)
+    }
+
+    /// Scan for convertible Live Photos incrementally. Fetches the candidate set
+    /// fast (metadata predicate), orders it by the current direction/start-date
+    /// window, then classifies in buffered batches so the UI stays responsive.
     func scan() {
         authorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         guard canRead else {
@@ -54,14 +96,92 @@ final class LiveToStillModel {
         }
         scanTask?.cancel()
         errorMessage = nil
+        items = []
+        allCandidates = []
+        candidates = []
+        classifiedCount = 0
+        scanAheadOf = 0
+        scrollAnchorID = nil
+        isScanning = true
+        lastScanDirection = scanDirectionSetting
+        lastScanStartDate = scanStartDateSetting
+        scanTask = Task {
+            // Fast metadata-only fetch of every Live Photo candidate. Ordering
+            // and classification (Live vs Loop/Bounce/Long) are deferred so
+            // nothing blocks up front.
+            let found = await scanner.fetchCandidates()
+            guard !Task.isCancelled else { return }
+            allCandidates = found
+            candidates = SequenceGrouping.scanOrdered(
+                found, direction: scanDirectionSetting, startDate: scanStartDateSetting
+            )
+            hasScanned = true
+            await classifyBatches()
+            isScanning = false
+        }
+    }
+
+    /// Classify the next unclassified candidates on demand as the grid scrolls.
+    func scanMore(currentIndex: Int = 0) {
+        scanAheadOf = max(scanAheadOf, currentIndex)
+        guard canRead, hasMoreToScan, !isScanning else { return }
         isScanning = true
         scanTask = Task {
-            let found = await scanner.scan()
-            guard !Task.isCancelled else { return }
-            items = found
-            scrollAnchorID = nil   // fresh results start at the top
+            await classifyBatches()
             isScanning = false
-            hasScanned = true
+        }
+    }
+
+    /// Classify successive `batchSize` slices of `candidates`, appending the
+    /// convertible ones to `items`. Stops when the candidate list is exhausted
+    /// or once there are `targetBufferAhead` items classified beyond the viewed
+    /// position. Yields between batches so the UI stays responsive.
+    private func classifyBatches() async {
+        while hasMoreToScan {
+            if Task.isCancelled { return }
+            if items.count - scanAheadOf >= targetBufferAhead { break }
+
+            let start = classifiedCount
+            let end = min(start + batchSize, candidates.count)
+            let batchIDs = candidates[start..<end].map(\.id)
+            let convertible = await scanner.convertibleItems(in: batchIDs)
+            if Task.isCancelled { return }
+            // Preserve window order: `convertibleItems` returns them keyed, we
+            // append in candidate order.
+            let byID = Dictionary(convertible.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            for id in batchIDs {
+                if let item = byID[id] { items.append(item) }
+            }
+            classifiedCount = end
+            await Task.yield()
+        }
+    }
+
+    /// Called when the direction/start-date controls change. Restarts the view
+    /// (clears the grid, re-populates from the new window front) while keeping
+    /// the fetched candidate set for reuse; a debounced task prunes if needed.
+    func applyScanSettings() {
+        let newDirection = scanDirectionSetting
+        let newStart = scanStartDateSetting
+        guard newDirection != lastScanDirection || newStart != lastScanStartDate else { return }
+        lastScanDirection = newDirection
+        lastScanStartDate = newStart
+
+        scanTask?.cancel()
+        // Re-window from the FULL fetched candidate set (not the previously
+        // windowed subset) so widening the window brings items back. Rebuild
+        // from the front.
+        candidates = SequenceGrouping.scanOrdered(
+            allCandidates, direction: newDirection, startDate: newStart
+        )
+        items = []
+        classifiedCount = 0
+        scanAheadOf = 0
+        scrollAnchorID = nil
+        isScanning = true
+        scanTask = Task {
+            await classifyBatches()
+            isScanning = false
         }
     }
 
@@ -170,21 +290,31 @@ final class LiveToStillModel {
 /// Bounce (playbackStyle == .imageAnimated); keeps Live and Long Exposure
 /// (playbackStyle == .livePhoto).
 private actor LivePhotoScanner {
-    func scan() -> [LivePhotoItem] {
+    /// Fast metadata-only fetch of every Live Photo candidate (id + date). No
+    /// per-asset classification here, so it returns quickly even for a large
+    /// library. Classification happens later, in batches, via `convertibleItems`.
+    func fetchCandidates() -> [TimedPhoto] {
         let options = PHFetchOptions()
-        // Only assets flagged as Live Photos are candidates.
         options.predicate = NSPredicate(
             format: "(mediaSubtypes & %d) != 0",
             PHAssetMediaSubtype.photoLive.rawValue
         )
-        options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
         let assets = PHAsset.fetchAssets(with: .image, options: options)
+        var result: [TimedPhoto] = []
+        assets.enumerateObjects { asset, _, _ in
+            guard let date = asset.creationDate else { return }
+            result.append(TimedPhoto(id: asset.localIdentifier, date: date))
+        }
+        return result
+    }
 
+    /// Classify a batch of candidate ids, returning only those convertible to a
+    /// plain still (genuine Live and Long Exposure — never Loop/Bounce).
+    func convertibleItems(in ids: [String]) -> [LivePhotoItem] {
+        guard !ids.isEmpty else { return [] }
+        let assets = PHAsset.fetchAssets(withLocalIdentifiers: ids, options: nil)
         var items: [LivePhotoItem] = []
         assets.enumerateObjects { asset, _, _ in
-            // Keep only genuine Live Photos and Long Exposure; exclude Loop and
-            // Bounce. LivePhotoVariation reads the effect type (with a public
-            // playbackStyle fallback).
             guard LivePhotoVariation.of(asset).isConvertibleToStill else { return }
             guard let date = asset.creationDate else { return }
             items.append(LivePhotoItem(id: asset.localIdentifier, date: date))

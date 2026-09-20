@@ -18,18 +18,16 @@ struct LiveToStillView: View {
     private let columns = [GridItem(.adaptive(minimum: 110), spacing: 3)]
 
     var body: some View {
-        Group {
-            if model.isScanning && model.items.isEmpty {
-                ProgressView("Finding Live Photos…")
-            } else if model.hasScanned && model.items.isEmpty {
-                ContentUnavailableView(
-                    "No Live Photos",
-                    systemImage: "livephoto",
-                    description: Text("No convertible Live Photos were found. Loop and Bounce effects aren’t included, and photos unavailable locally can’t be converted.")
-                )
-            } else {
-                grid
-            }
+        VStack(spacing: 0) {
+            ScanControlsHeader(
+                direction: $model.scanDirectionRaw,
+                startEnabled: $model.scanStartEnabled,
+                startInterval: $model.scanStartInterval,
+                dateRange: model.libraryDateRange,
+                onChange: { model.applyScanSettings() }
+            )
+            Divider()
+            content
         }
         .navigationTitle("Live → Still")
         .navigationBarTitleDisplayMode(.inline)
@@ -69,6 +67,21 @@ struct LiveToStillView: View {
         .task { if !model.hasScanned { model.scan() } }
     }
 
+    @ViewBuilder
+    private var content: some View {
+        if model.isScanning && model.items.isEmpty {
+            Spacer(); ProgressView("Finding Live Photos…"); Spacer()
+        } else if model.hasScanned && model.items.isEmpty && !model.isScanning {
+            ContentUnavailableView(
+                "No Live Photos",
+                systemImage: "livephoto",
+                description: Text("No convertible Live Photos were found in this range. Loop and Bounce effects aren’t included, and photos unavailable locally can’t be converted.")
+            )
+        } else {
+            grid
+        }
+    }
+
     private var detailPresented: Binding<Bool> {
         Binding(get: { detailID != nil }, set: { if !$0 { detailID = nil } })
     }
@@ -79,29 +92,61 @@ struct LiveToStillView: View {
         Binding(get: { selection }, set: { if let new = $0 { selection = new } })
     }
 
+    @State private var didAttemptRestore = false
     @State private var didRestoreScroll = false
+    // Indices of grid cells currently on screen; the smallest is the anchor.
+    @State private var visibleIndices: Set<Int> = []
+
+    /// Remember the topmost visible cell as the scroll anchor. Skipped until the
+    /// initial restore runs so it isn't overwritten before the restore jump.
+    private func updateAnchor() {
+        guard didRestoreScroll || model.scrollAnchorID == nil else { return }
+        guard let topIndex = visibleIndices.min(),
+              model.items.indices.contains(topIndex) else { return }
+        model.scrollAnchorID = model.items[topIndex].id
+    }
 
     private var grid: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVGrid(columns: columns, spacing: 3) {
-                    ForEach(model.items) { item in
+                    ForEach(Array(model.items.enumerated()), id: \.element.id) { index, item in
                         cell(for: item).id(item.id)
+                            // Keep a rolling buffer classified ahead of the row
+                            // being viewed, and track the topmost visible cell so
+                            // scroll position survives navigation. Tracking the
+                            // visible SET is immune to items appending at the end.
+                            .onAppear {
+                                model.scanMore(currentIndex: index)
+                                visibleIndices.insert(index)
+                                updateAnchor()
+                            }
+                            .onDisappear {
+                                visibleIndices.remove(index)
+                                updateAnchor()
+                            }
                     }
                 }
                 .padding(3)
-                .scrollTargetLayout()
+
+                // Auto-continue classifying when more remains and the bottom is
+                // reached.
+                if model.hasMoreToScan {
+                    HStack { ProgressView(); Text("Finding more…").font(.caption).foregroundStyle(.secondary) }
+                        .padding(.vertical, 8)
+                        .onAppear { model.scanMore(currentIndex: model.items.count) }
+                }
             }
-            // `.scrollPosition` accurately tracks the leading (top) visible cell
-            // into the model as the user scrolls.
-            .scrollPosition(id: $model.scrollAnchorID, anchor: .top)
-            // On first appear of this view instance, nudge back to the remembered
-            // cell (a lazy grid won't auto-restore an unmaterialized cell). Guard
-            // so continued scroll tracking isn't overridden.
+            // On first appear, jump back to the remembered cell; enable anchor
+            // tracking only after the restore scroll settles.
             .onAppear {
-                guard !didRestoreScroll, let id = model.scrollAnchorID else { return }
-                didRestoreScroll = true
-                DispatchQueue.main.async { proxy.scrollTo(id, anchor: .top) }
+                guard !didAttemptRestore else { return }
+                didAttemptRestore = true
+                guard let id = model.scrollAnchorID else { didRestoreScroll = true; return }
+                DispatchQueue.main.async {
+                    proxy.scrollTo(id, anchor: .top)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { didRestoreScroll = true }
+                }
             }
         }
     }

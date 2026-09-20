@@ -7,55 +7,12 @@ import SwiftUI
 struct SimilarPhotosView: View {
     @Bindable var library: PhotoLibraryModel
 
-    // Scan controls live here (not in settings) so they can be adjusted while
-    // reviewing. They're pinned above the list. Changing any of them calls
-    // library.applySettings(), which reconciles incrementally (flip / cut /
-    // rescan) without redoing measured work when it can be avoided.
-    @AppStorage("review.scanDirection") private var scanDirection = "older"
-    @AppStorage("review.scanStartEnabled") private var scanStartEnabled = false
-    @AppStorage("review.scanStartDate") private var scanStartInterval = 0.0
     @State private var didAttemptRestore = false
     @State private var didRestoreScroll = false
     // Indices of group rows currently on screen. The topmost (smallest) one is
     // remembered as the scroll anchor. A Set is used so the scan appending rows
     // at the bottom never changes which row is topmost-visible.
     @State private var visibleIndices: Set<Int> = []
-
-    private var scanStartDate: Binding<Date> {
-        Binding(
-            get: {
-                let stored = scanStartInterval == 0 ? Date() : Date(timeIntervalSince1970: scanStartInterval)
-                // Keep the shown date within the library's span.
-                if let range = library.libraryDateRange {
-                    return min(max(stored, range.lowerBound), range.upperBound)
-                }
-                return stored
-            },
-            set: { newValue in
-                // The picker is day-granular. Snap the boundary so the whole
-                // selected day is included in the travel direction: "Newest
-                // first" (older) includes up to end-of-day; "Oldest first"
-                // (newer) includes from start-of-day.
-                let cal = Calendar.current
-                let snapped = scanDirection == "older"
-                    ? (cal.date(bySettingHour: 23, minute: 59, second: 59, of: newValue) ?? newValue)
-                    : cal.startOfDay(for: newValue)
-                scanStartInterval = snapped.timeIntervalSince1970
-                library.applySettings()
-            }
-        )
-    }
-
-    /// Default start date when first enabling "from date". Seeded to the
-    /// midpoint of the library span so enabling it actually narrows the window
-    /// (rather than the extreme, which would equal the whole library and look
-    /// like a no-op). The user then drags the picker to fine-tune.
-    private func defaultStart(for direction: String) -> Date {
-        guard let range = library.libraryDateRange else { return Date() }
-        let mid = range.lowerBound.timeIntervalSince1970
-            + (range.upperBound.timeIntervalSince1970 - range.lowerBound.timeIntervalSince1970) / 2
-        return Date(timeIntervalSince1970: mid)
-    }
 
     /// Row date label: month/day and time, adding the year only when the photo
     /// isn't from the current year.
@@ -86,53 +43,15 @@ struct SimilarPhotosView: View {
         return library.hasMoreToScan ? "\(n) \(unit) & more" : "\(n) \(unit)"
     }
 
-    /// Pinned scan controls: direction and optional start date. Kept above the
-    /// list so the start date can be changed mid-scroll.
+    /// Pinned scan controls, bound to this list's own window state on the model.
     private var scanControls: some View {
-        VStack(spacing: 8) {
-            // Labels name the travel direction. "New→Old" walks newest→oldest
-            // (tag "older", the destination); "Old→New" walks oldest→newest
-            // (tag "newer").
-            Picker("Scan order", selection: $scanDirection) {
-                Text("New→Old").tag("older")
-                Text("Old→New").tag("newer")
-            }
-            .pickerStyle(.segmented)
-            .onChange(of: scanDirection) { _, newValue in
-                // Reseed the start to the new direction's natural end so the
-                // window stays meaningful after flipping.
-                if scanStartEnabled { scanStartInterval = defaultStart(for: newValue).timeIntervalSince1970 }
-                library.applySettings()
-            }
-
-            HStack {
-                Toggle(scanDirection == "older" ? "Newest from date" : "Oldest from date", isOn: $scanStartEnabled)
-                    .toggleStyle(.button)
-                    .onChange(of: scanStartEnabled) { _, isOn in
-                        // Seed a concrete, in-range date when first enabling so
-                        // the window is non-empty and the model (which ignores
-                        // interval 0) and the picker agree.
-                        if isOn { scanStartInterval = defaultStart(for: scanDirection).timeIntervalSince1970 }
-                        library.applySettings()
-                    }
-                if scanStartEnabled {
-                    // Bound the picker to the library's span so an empty date
-                    // can't be chosen.
-                    Group {
-                        if let range = library.libraryDateRange {
-                            DatePicker("", selection: scanStartDate, in: range, displayedComponents: .date)
-                        } else {
-                            DatePicker("", selection: scanStartDate, displayedComponents: .date)
-                        }
-                    }
-                    .labelsHidden()
-                }
-                Spacer()
-            }
-        }
-        .padding(.horizontal)
-        .padding(.vertical, 8)
-        .background(.bar)
+        ScanControlsHeader(
+            direction: $library.scanDirectionRaw,
+            startEnabled: $library.scanStartEnabled,
+            startInterval: $library.scanStartInterval,
+            dateRange: library.libraryDateRange,
+            onChange: { library.applySettings() }
+        )
     }
 
     var body: some View {

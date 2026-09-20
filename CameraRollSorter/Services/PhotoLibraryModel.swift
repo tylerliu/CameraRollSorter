@@ -164,8 +164,8 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
             fetchResult = result.fetchResult
             sortedPhotos = SequenceGrouping.scanOrdered(
                 result.photos,
-                direction: Self.scanDirectionSetting,
-                startDate: Self.scanStartDateSetting
+                direction: scanDirectionSetting,
+                startDate: scanStartDateSetting
             )
             scannedIDs = []
             scanProgression = []
@@ -322,8 +322,8 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
     private func recordGeoConfig() {
         lastScanGeoEnabled = Self.geoGateEnabledSetting
         lastScanGeoKilometers = Self.geoGateKilometersSetting
-        lastScanDirection = Self.scanDirectionSetting
-        lastScanStartDate = Self.scanStartDateSetting
+        lastScanDirection = scanDirectionSetting
+        lastScanStartDate = scanStartDateSetting
     }
 
     private static var geoGateEnabledSetting: Bool {
@@ -332,17 +332,19 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
     private static var geoGateKilometersSetting: Double {
         UserDefaults.standard.object(forKey: "review.geoGateKilometers") as? Double ?? 1.0
     }
-    private static var scanDirectionSetting: ScanDirection {
-        let raw = UserDefaults.standard.string(forKey: "review.scanDirection") ?? "older"
-        return ScanDirection(rawValue: raw) ?? .older
+    // Per-view scan-window state, bound to the pinned ScanControlsHeader. NOT
+    // shared with the Live→Still screen — each list has its own window.
+    var scanDirectionRaw = "older"
+    var scanStartEnabled = false
+    var scanStartInterval = 0.0
+
+    private var scanDirectionSetting: ScanDirection {
+        ScanDirection(rawValue: scanDirectionRaw) ?? .older
     }
-    /// The configured scan start date, or nil when the "start from a date"
-    /// toggle is off (scan the whole roll).
-    private static var scanStartDateSetting: Date? {
-        guard UserDefaults.standard.bool(forKey: "review.scanStartEnabled") else { return nil }
-        let interval = UserDefaults.standard.double(forKey: "review.scanStartDate")
-        guard interval > 0 else { return nil }
-        return Date(timeIntervalSince1970: interval)
+    /// The configured scan start date, or nil when "from date" is off.
+    private var scanStartDateSetting: Date? {
+        guard scanStartEnabled, scanStartInterval > 0 else { return nil }
+        return Date(timeIntervalSince1970: scanStartInterval)
     }
 
     /// Called when the settings sheet closes. Reconciles the current results
@@ -360,8 +362,8 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
             return
         }
 
-        let newDirection = Self.scanDirectionSetting
-        let newStart = Self.scanStartDateSetting
+        let newDirection = scanDirectionSetting
+        let newStart = scanStartDateSetting
 
         // Scan-scope change (direction and/or start date). Two layers:
         //   • View: the shown groups are no longer valid for the new setting, so
@@ -552,8 +554,8 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
         fetchResult = result.fetchResult
         sortedPhotos = SequenceGrouping.scanOrdered(
             result.photos,
-            direction: Self.scanDirectionSetting,
-            startDate: Self.scanStartDateSetting
+            direction: scanDirectionSetting,
+            startDate: scanStartDateSetting
         )
         unavailablePhotoIDs.subtract(removed)
         scannedIDs.subtract(removed)
