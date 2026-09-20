@@ -189,12 +189,13 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
         scanAheadOf = max(scanAheadOf, currentIndex)
         guard canRead, hasMoreToScan, !isScanning else { return }
         isScanning = true
+        let token = revision
         scanTask = Task {
             // Scan until there are `targetGroupCount` groups beyond the viewed
             // position, or the library is exhausted. Keeps the buffer ahead of
             // the viewer so the "Scan more" fallback isn't needed when scrolling.
             await runBatches()
-            isScanning = false
+            if revision == token { isScanning = false }
         }
     }
 
@@ -383,9 +384,10 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
         applyThreshold()
         if hasMoreToScan, groups.count < targetGroupCount, !isScanning {
             isScanning = true
+            let token = revision
             scanTask = Task {
                 await runBatches()
-                isScanning = false
+                if revision == token { isScanning = false }
             }
         }
     }
@@ -406,9 +408,12 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
         applyThreshold()   // clears the visible list immediately
         progress = "Reading photo dates…"
         isScanning = true
+        let token = revision
         scanTask = Task {
             await runBatches()
-            isScanning = false
+            // Only clear the flag if this is still the current scan; a superseded
+            // (cancelled) task must not stomp a newer scan's isScanning = true.
+            if revision == token { isScanning = false }
         }
     }
 
