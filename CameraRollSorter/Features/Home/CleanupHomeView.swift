@@ -41,7 +41,9 @@ struct CleanupHomeView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
                 Task { await library.syncLibrary() }
-                liveToStill.scan()
+                // Incremental reconcile (add/remove) rather than a full rescan,
+                // so returning from the delete confirmation doesn't reset scroll.
+                Task { await liveToStill.syncLibrary() }
             }
         }
     }

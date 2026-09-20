@@ -28,7 +28,7 @@ struct LivePhotoItem: Identifiable, Sendable {
 }
 
 @MainActor @Observable
-final class LiveToStillModel {
+final class LiveToStillModel: NSObject, PHPhotoLibraryChangeObserver {
     var authorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
     var items: [LivePhotoItem] = []
     var isScanning = false
@@ -40,6 +40,7 @@ final class LiveToStillModel {
 
     private let scanner = LivePhotoScanner()
     private var scanTask: Task<Void, Never>?
+    private var observing = false
 
     // Incremental scan state. The candidate Live Photos are fetched once (fast,
     // metadata only) and ordered by the direction/start-date window. They are
@@ -93,6 +94,10 @@ final class LiveToStillModel {
             items = []
             hasScanned = false
             return
+        }
+        if !observing {
+            PHPhotoLibrary.shared().register(self)
+            observing = true
         }
         scanTask?.cancel()
         errorMessage = nil
@@ -182,6 +187,77 @@ final class LiveToStillModel {
         scanTask = Task {
             await classifyBatches()
             isScanning = false
+        }
+    }
+
+    deinit { PHPhotoLibrary.shared().unregisterChangeObserver(self) }
+
+    nonisolated func photoLibraryDidChange(_ changeInstance: PHChange) {
+        // PhotoKit delivers this on a background thread; do all work on the main
+        // actor. A converted/added/deleted photo changes the candidate set, so
+        // reconcile incrementally rather than resetting the grid.
+        Task { @MainActor [weak self] in await self?.syncLibrary() }
+    }
+
+    /// Incrementally reconcile the grid with the current library — used on
+    /// library changes and scene-activation — WITHOUT resetting scroll. Fetches
+    /// the candidate set fresh, then adds/removes items in place:
+    /// - removed candidates drop out of `items`/`candidates`/`allCandidates`
+    /// - added candidates are appended to the unclassified tail so scanMore
+    ///   reaches them; any already inside the classified window are classified
+    ///   now and inserted in window order.
+    func syncLibrary() async {
+        authorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        guard canRead else { items = []; hasScanned = false; return }
+        // If we never scanned, a plain scan is correct (nothing to preserve).
+        guard hasScanned, !isScanning else { if !hasScanned { scan() }; return }
+
+        let found = await scanner.fetchCandidates()
+        let oldIDs = Set(allCandidates.map(\.id))
+        let newIDs = Set(found.map(\.id))
+        let added = newIDs.subtracting(oldIDs)
+        let removed = oldIDs.subtracting(newIDs)
+        guard !added.isEmpty || !removed.isEmpty else { return }
+
+        allCandidates = found
+
+        // Remove dropped photos everywhere. Preserves scroll: SwiftUI keeps the
+        // remaining rows in place rather than resetting.
+        if !removed.isEmpty {
+            items.removeAll { removed.contains($0.id) }
+        }
+
+        // Rebuild the windowed candidate list from the fresh set, then figure
+        // out how far we'd classified (by matching already-shown items).
+        let shownIDs = Set(items.map(\.id))
+        candidates = SequenceGrouping.scanOrdered(
+            found, direction: scanDirectionSetting, startDate: scanStartDateSetting
+        )
+        // The classified frontier is the furthest candidate index whose id is
+        // already shown; anything added at or before it should be classified now.
+        let frontier = candidates.lastIndex { shownIDs.contains($0.id) }
+        classifiedCount = (frontier ?? -1) + 1
+
+        // Classify any added candidates that fall within the frontier and insert
+        // them in window order. Added photos beyond the frontier stay in the
+        // unclassified tail for scanMore.
+        let addedInside = added.isEmpty ? [] : candidates.prefix(classifiedCount).map(\.id).filter { added.contains($0) }
+        if !addedInside.isEmpty {
+            let newItems = await scanner.convertibleItems(in: addedInside)
+            let convertibleAdded = Set(newItems.map(\.id))
+            // Rebuild `items` in window order over the classified prefix so the
+            // new ones land in their correct position (not at the end).
+            let itemByID = Dictionary(
+                (items + newItems).map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a }
+            )
+            var rebuilt: [LivePhotoItem] = []
+            for cand in candidates.prefix(classifiedCount) {
+                if shownIDs.contains(cand.id) || convertibleAdded.contains(cand.id),
+                   let item = itemByID[cand.id] {
+                    rebuilt.append(item)
+                }
+            }
+            items = rebuilt
         }
     }
 
