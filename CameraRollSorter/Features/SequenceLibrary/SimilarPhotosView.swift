@@ -7,12 +7,7 @@ import SwiftUI
 struct SimilarPhotosView: View {
     @Bindable var library: PhotoLibraryModel
 
-    @State private var didAttemptRestore = false
-    @State private var didRestoreScroll = false
-    // Indices of group rows currently on screen. The topmost (smallest) one is
-    // remembered as the scroll anchor. A Set is used so the scan appending rows
-    // at the bottom never changes which row is topmost-visible.
-    @State private var visibleIndices: Set<Int> = []
+    @State private var scrollTracker = ScrollAnchorTracker()
 
     /// Row date label: month/day and time, adding the year only when the photo
     /// isn't from the current year.
@@ -25,14 +20,11 @@ struct SimilarPhotosView: View {
         return date.formatted(format)
     }
 
-    /// Remember the topmost visible group as the scroll anchor. Skipped until
-    /// the initial restore has run, so navigating back doesn't overwrite the
-    /// saved anchor with the (top-of-list) rows shown before the restore jump.
+    /// Save the topmost visible group as the scroll anchor on the model.
     private func updateAnchor() {
-        guard didRestoreScroll || library.scrollAnchorID == nil else { return }
-        guard let topIndex = visibleIndices.min(),
-              library.groups.indices.contains(topIndex) else { return }
-        library.scrollAnchorID = library.groups[topIndex].id
+        if let id = scrollTracker.topVisibleID(in: library.groups.map(\.id)) {
+            library.scrollAnchorID = id
+        }
     }
 
     /// "12 groups" once fully scanned, or "12 groups & more" while photos
@@ -106,16 +98,14 @@ struct SimilarPhotosView: View {
                         .id(group.id)
                         // Keep a rolling buffer scanned ahead of the viewed row,
                         // and track which rows are on screen so we can remember
-                        // the topmost one across navigation. Tracking the visible
-                        // SET (not last-appeared) is immune to the scan appending
-                        // new rows at the bottom.
+                        // the topmost one across navigation.
                         .onAppear {
                             library.scanMore(currentIndex: index)
-                            visibleIndices.insert(index)
+                            scrollTracker.onRowAppear(index)
                             updateAnchor()
                         }
                         .onDisappear {
-                            visibleIndices.remove(index)
+                            scrollTracker.onRowDisappear(index)
                             updateAnchor()
                         }
                     }
@@ -131,22 +121,7 @@ struct SimilarPhotosView: View {
             }
         }
         .refreshable { library.refresh() }
-        // On first appear of this view instance, jump back to the remembered
-        // group (a List won't auto-restore an unmaterialized row). Enable anchor
-        // tracking only AFTER the restore scroll completes, so the top-of-list
-        // rows shown pre-jump don't overwrite the saved anchor.
-        .onAppear {
-            guard !didAttemptRestore else { return }
-            didAttemptRestore = true
-            guard let id = library.scrollAnchorID else { didRestoreScroll = true; return }
-            DispatchQueue.main.async {
-                proxy.scrollTo(id, anchor: .top)
-                // Let the scroll settle before re-enabling tracking.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                    didRestoreScroll = true
-                }
-            }
-        }
+        .onAppear { scrollTracker.restore(library.scrollAnchorID, proxy: proxy) }
         }
     }
 }

@@ -154,7 +154,6 @@ struct CleanupHomeView: View {
 /// or a short hint).
 struct CategoryRow: View {
     enum Detail {
-        case count(Int, unit: String)
         case progress(String)
         case text(String)
     }
@@ -180,8 +179,6 @@ struct CategoryRow: View {
     @ViewBuilder
     private var trailing: some View {
         switch detail {
-        case let .count(value, unit):
-            Text("\(value) \(unit)")
         case let .progress(text):
             HStack(spacing: 6) {
                 ProgressView()

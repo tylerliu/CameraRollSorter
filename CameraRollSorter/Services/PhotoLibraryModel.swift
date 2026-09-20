@@ -23,16 +23,12 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
     var groups: [PhotoSequence] = []
     var pairs: [SimilarityPair] = []
     var analysisError: String?
-    var progress = ""
     var threshold: Float = 0.4
     private var photos: [TimedPhoto] = []
-    private var accessiblePhotoCount = 0
-    private var missingDateCount = 0
     private var unavailablePhotoIDs: Set<String> = []
     private let analyzer = SimilarityAnalyzer()
     var isScanning = false
     var hasScanned = false
-    var summary = ""
     var revision = UUID()
     private var scanTask: Task<Void, Never>?
     // Debounces the destructive prune after scan-scope (direction/date) changes,
@@ -141,12 +137,11 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
         photos = []
         unavailablePhotoIDs = []
         analysisError = nil
-        progress = "Reading photo dates…"
         revision = UUID()
         hasScanned = false
         isScanning = false
         fetchResult = nil
-        guard canRead else { summary = ""; return }
+        guard canRead else { return }
         if !observing {
             PHPhotoLibrary.shared().register(self)
             observing = true
@@ -169,11 +164,8 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
             )
             scannedIDs = []
             scanProgression = []
-            accessiblePhotoCount = result.count
-            missingDateCount = result.missingDates
             // Capture the geo-gate config this scan runs under.
             recordGeoConfig()
-            updateSummary()
             // Fill the initial buffer of groups from the front of the list.
             scanAheadOf = 0
             await runBatches()
@@ -234,12 +226,9 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
                 .filter { !measured.contains($0) }
 
             isScanningBatch = true
-            let done = scannedIDs.count + batchAnchorIDs.count
-            progress = "Comparing photos… \(done) of \(sortedPhotos.count)"
             do {
                 let scores = try await analyzer.analyzeComparisons(
                     batchComparisons,
-                    progress: { _, _ in },
                     partialResults: { [self] newPairs in
                         guard self.revision == token else { return }
                         let ids = Set(self.photos.map(\.id))
@@ -272,11 +261,9 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
                 if !scannedIDs.contains(id) { scanProgression.append(id) }
             }
             scannedIDs.formUnion(batchAnchorIDs)
-            updateSummary()
             applyThreshold()
         }
         isScanningBatch = false
-        progress = hasMoreToScan ? "Paused — scroll for more" : "Scan complete"
     }
 
     func applyThreshold() {
@@ -301,10 +288,6 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
             }
         }
         groups = SimilarityGrouping.groups(photos: ordered, pairs: pairs, threshold: threshold)
-    }
-
-    private func updateSummary() {
-        summary = "\(accessiblePhotoCount) accessible photos across your library. \(missingDateCount) accessible photos have no capture date and cannot be grouped. \(unavailablePhotoIDs.count) candidate photos unavailable locally."
     }
 
     /// Build the comparison list for the given neighborhoods, applying the
@@ -413,7 +396,6 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
         scrollAnchorID = nil
         revision = UUID()
         applyThreshold()   // clears the visible list immediately
-        progress = "Reading photo dates…"
         isScanning = true
         let token = revision
         scanTask = Task {
@@ -482,10 +464,7 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
 
     private func removeFromCurrentResults(_ identifiers: Set<String>) {
         guard !identifiers.isEmpty else { return }
-        let previousCount = photos.count
         photos.removeAll { identifiers.contains($0.id) }
-        let removedDatedPhotos = previousCount - photos.count
-        accessiblePhotoCount = max(0, accessiblePhotoCount - removedDatedPhotos)
         pairs.removeAll { identifiers.contains($0.first) || identifiers.contains($0.second) }
         unavailablePhotoIDs.subtract(identifiers)
 
@@ -494,12 +473,10 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
         scannedIDs.subtract(identifiers)
         scanProgression.removeAll { identifiers.contains($0) }
 
-        updateSummary()
         // Deletion can only remove edges and split groups — never create a new
         // similar pair. So no Vision work is needed; just regroup from the
         // surviving measured edges.
         applyThreshold()
-        progress = "Library updated"
     }
 
     nonisolated func photoLibraryDidChange(_ changeInstance: PHChange) {
@@ -535,16 +512,9 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
         let added = newIDs.subtracting(oldIDs)
         let removed = oldIDs.subtracting(newIDs)
 
-        guard !added.isEmpty || !removed.isEmpty else {
-            accessiblePhotoCount = result.count
-            missingDateCount = result.missingDates
-            updateSummary()
-            return
-        }
+        guard !added.isEmpty || !removed.isEmpty else { return }
 
         analysisError = nil
-        accessiblePhotoCount = result.count
-        missingDateCount = result.missingDates
 
         // Rebuild the scan-ordered array from the new library snapshot, honoring
         // the current direction and start-date window. `scannedIDs` survives the
@@ -583,9 +553,7 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
         // sides, so cross pairs are covered. Photos added beyond the window are
         // handled later by scanMore.
         guard !addedInsideWindow.isEmpty else {
-            updateSummary()
             applyThreshold()
-            progress = "Library updated"
             isScanning = false
             hasScanned = true
             return
@@ -612,9 +580,7 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
         let missingComparisons = geoFilteredComparisons(for: neighborhoods)
             .filter { !measured.contains($0) }
         guard !missingComparisons.isEmpty else {
-            updateSummary()
             applyThreshold()
-            progress = "Library updated"
             isScanning = false
             hasScanned = true
             return
@@ -622,10 +588,6 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
         do {
             let scores = try await analyzer.analyzeComparisons(
                 missingComparisons,
-                progress: { [weak self] completed, total in
-                    guard let self, self.revision == token else { return }
-                    self.progress = "Comparing library changes: \(completed) of \(total) pairs"
-                },
                 partialResults: { [weak self] newPairs in
                     guard let self, self.revision == token else { return }
                     self.pairs.append(contentsOf: newPairs)
@@ -639,7 +601,6 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
                     && !pairs.contains { $0.id == score.id }
             })
             unavailablePhotoIDs.formUnion(scores.unavailableIDs.intersection(currentIDs))
-            updateSummary()
             applyThreshold()
         } catch is CancellationError {
             return
@@ -647,7 +608,6 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
             guard revision == token else { return }
             analysisError = "Similarity analysis failed: \(error.localizedDescription). Pull to refresh to retry."
         }
-        progress = "Library updated"
         isScanning = false
         hasScanned = true
     }
@@ -655,10 +615,7 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
 
 private actor SequenceScanner {
     struct Result: Sendable {
-        let groups: [CandidateNeighborhood]
         let photos: [TimedPhoto]
-        let count: Int
-        let missingDates: Int
         // The fetch result this scan enumerated, so the caller can diff future
         // change notifications against it. PHFetchResult is thread-safe.
         let fetchResult: PHFetchResult<PHAsset>
@@ -669,7 +626,6 @@ private actor SequenceScanner {
         options.includeAllBurstAssets = true
         let assets = PHAsset.fetchAssets(with: .image, options: options)
         var photos: [TimedPhoto] = []
-        var missing = 0
         assets.enumerateObjects { asset, _, _ in
             if let date = asset.creationDate {
                 let coordinate = asset.location?.coordinate
@@ -679,8 +635,8 @@ private actor SequenceScanner {
                     latitude: coordinate?.latitude,
                     longitude: coordinate?.longitude
                 ))
-            } else { missing += 1 }
+            }
         }
-        return Result(groups: SequenceGrouping.groups(photos), photos: photos, count: photos.count, missingDates: missing, fetchResult: assets)
+        return Result(photos: photos, fetchResult: assets)
     }
 }

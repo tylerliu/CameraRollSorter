@@ -23,17 +23,8 @@ actor SimilarityAnalyzer {
             }
     }
 
-    func analyzeCandidates(
-        _ candidates: [CandidateNeighborhood],
-        progress: @escaping @MainActor @Sendable (Int, Int) -> Void,
-        partialResults: @escaping @MainActor @Sendable ([SimilarityPair]) -> Void
-    ) async throws -> SimilarityResult {
-        try await analyzeComparisons(SequenceGrouping.comparisons(candidates), progress: progress, partialResults: partialResults)
-    }
-
     func analyzeComparisons(
         _ comparisons: [CandidateComparison],
-        progress: @escaping @MainActor @Sendable (Int, Int) -> Void,
         partialResults: @escaping @MainActor @Sendable ([SimilarityPair]) -> Void
     ) async throws -> SimilarityResult {
         // A bounded per-scan cache avoids retaining a whole library of feature prints.
@@ -52,8 +43,7 @@ actor SimilarityAnalyzer {
         var pairs: [SimilarityPair] = []
         var pendingPairs: [SimilarityPair] = []
         let partialResultsBatchSize = 5 // Delivery cadence only; groups have no size limit.
-        await progress(0, comparisons.count)
-        for (index, edge) in comparisons.enumerated() {
+        for edge in comparisons {
             try Task.checkCancellation()
             let first = try load(edge.first)
             let second = try load(edge.second)
@@ -69,7 +59,6 @@ actor SimilarityAnalyzer {
                     pendingPairs.removeAll(keepingCapacity: true)
                 }
             }
-            if index % 10 == 0 || index + 1 == comparisons.count { await progress(index + 1, comparisons.count) }
         }
         if !pendingPairs.isEmpty { await partialResults(pendingPairs) }
         return SimilarityResult(pairs: pairs, unavailableIDs: unavailable)

@@ -128,18 +128,13 @@ struct LiveToStillView: View {
         Binding(get: { selection }, set: { if let new = $0 { selection = new } })
     }
 
-    @State private var didAttemptRestore = false
-    @State private var didRestoreScroll = false
-    // Indices of grid cells currently on screen; the smallest is the anchor.
-    @State private var visibleIndices: Set<Int> = []
+    @State private var scrollTracker = ScrollAnchorTracker()
 
-    /// Remember the topmost visible cell as the scroll anchor. Skipped until the
-    /// initial restore runs so it isn't overwritten before the restore jump.
+    /// Save the topmost visible cell as the scroll anchor on the model.
     private func updateAnchor() {
-        guard didRestoreScroll || model.scrollAnchorID == nil else { return }
-        guard let topIndex = visibleIndices.min(),
-              model.items.indices.contains(topIndex) else { return }
-        model.scrollAnchorID = model.items[topIndex].id
+        if let id = scrollTracker.topVisibleID(in: model.items.map(\.id)) {
+            model.scrollAnchorID = id
+        }
     }
 
     private var grid: some View {
@@ -150,15 +145,14 @@ struct LiveToStillView: View {
                         cell(for: item).id(item.id)
                             // Keep a rolling buffer classified ahead of the row
                             // being viewed, and track the topmost visible cell so
-                            // scroll position survives navigation. Tracking the
-                            // visible SET is immune to items appending at the end.
+                            // scroll position survives navigation.
                             .onAppear {
                                 model.scanMore(currentIndex: index)
-                                visibleIndices.insert(index)
+                                scrollTracker.onRowAppear(index)
                                 updateAnchor()
                             }
                             .onDisappear {
-                                visibleIndices.remove(index)
+                                scrollTracker.onRowDisappear(index)
                                 updateAnchor()
                             }
                     }
@@ -198,17 +192,8 @@ struct LiveToStillView: View {
                 guard dir != 0 else { return }
                 Task { await runAutoScroll(proxy: proxy) }
             }
-            // On first appear, jump back to the remembered cell; enable anchor
-            // tracking only after the restore scroll settles.
-            .onAppear {
-                guard !didAttemptRestore else { return }
-                didAttemptRestore = true
-                guard let id = model.scrollAnchorID else { didRestoreScroll = true; return }
-                DispatchQueue.main.async {
-                    proxy.scrollTo(id, anchor: .top)
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { didRestoreScroll = true }
-                }
-            }
+            // On first appear, jump back to the remembered cell.
+            .onAppear { scrollTracker.restore(model.scrollAnchorID, proxy: proxy) }
         }
     }
 
@@ -258,11 +243,11 @@ struct LiveToStillView: View {
             .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
-    /// Rubber-band drag-to-select, active only while `isSelecting`. Attached as
-    /// a high-priority gesture so it wins over the ScrollView's pan. Applies one
-    /// action (decided by the start cell) to every item in the index range
-    /// between the anchor and the cell under the finger, and auto-scrolls when
-    /// the finger nears the top/bottom edge (Photos-style).
+    /// Rubber-band drag-to-select, active only while `isSelecting`. A vertical
+    /// drag scrolls; a horizontal/diagonal drag paints, locking the ScrollView
+    /// via `.scrollDisabled` so it stops mid-gesture. Applies one action
+    /// (decided by the start cell) to every item in the index range between the
+    /// anchor and the cell under the finger, and auto-scrolls near the edges.
     private var dragSelectGesture: some Gesture {
         // minimumDistance 6 so the paint/scroll decision is made early, before
         // much scrolling happens.
@@ -295,19 +280,10 @@ struct LiveToStillView: View {
             }
     }
 
-    /// Apply the drag's action to every item between the anchor and the cell
-    /// under `point` (inclusive), from the pre-drag snapshot so backtracking
-    /// reverts. No-op if the point isn't over a cell (keeps the last range).
+    /// Paint to the cell under `point` (no-op if it's not over a cell, keeping
+    /// the last range).
     private func paintRange(to point: CGPoint) {
-        guard let anchor = dragAnchorIndex, let base = dragBaseSelection,
-              let index = itemIndex(at: point) else { return }
-        let lower = min(anchor, index), upper = max(anchor, index)
-        var next = base
-        for i in lower...upper where model.items.indices.contains(i) {
-            let id = model.items[i].id
-            if dragSelects { next.insert(id) } else { next.remove(id) }
-        }
-        selection = next
+        if let index = itemIndex(at: point) { paintRange(toIndex: index) }
     }
 
     /// Set the auto-scroll direction from the finger's distance to the viewport
@@ -320,8 +296,8 @@ struct LiveToStillView: View {
     }
 
     /// While the finger sits in an edge margin, step the scroll toward the next
-    /// off-screen row and keep painting to the finger's cell, so the selection
-    /// range extends as new rows scroll into view.
+    /// off-screen row and extend the selection to that row, so the range grows
+    /// in the scroll direction as new rows come into view.
     private func runAutoScroll(proxy: ScrollViewProxy) async {
         while autoScrollDir != 0 {
             let dir = autoScrollDir
@@ -329,9 +305,9 @@ struct LiveToStillView: View {
             let step = 3
             let targetIndex: Int
             if dir < 0 {
-                targetIndex = max(0, (visibleIndices.min() ?? 0) - step)
+                targetIndex = max(0, (scrollTracker.minVisibleIndex ?? 0) - step)
             } else {
-                targetIndex = min(model.items.count - 1, (visibleIndices.max() ?? 0) + step)
+                targetIndex = min(model.items.count - 1, (scrollTracker.maxVisibleIndex ?? 0) + step)
             }
             if model.items.indices.contains(targetIndex) {
                 withAnimation(.linear(duration: 0.2)) {
@@ -341,15 +317,15 @@ struct LiveToStillView: View {
                 // Extend the paint range to the row we scrolled toward, so the
                 // selection keeps growing in the scroll direction rather than
                 // snapping back to the (now off-screen) finger cell.
-                paintRangeToIndex(targetIndex)
+                paintRange(toIndex: targetIndex)
             }
             try? await Task.sleep(nanoseconds: 200_000_000)
         }
     }
 
-    /// Paint the range from the anchor to an explicit index (used by auto-scroll
-    /// where the finger cell is off-screen).
-    private func paintRangeToIndex(_ index: Int) {
+    /// Apply the drag's action to every item between the anchor and `index`
+    /// (inclusive), starting from the pre-drag snapshot so backtracking reverts.
+    private func paintRange(toIndex index: Int) {
         guard let anchor = dragAnchorIndex, let base = dragBaseSelection,
               model.items.indices.contains(index) else { return }
         let lower = min(anchor, index), upper = max(anchor, index)
