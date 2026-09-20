@@ -49,6 +49,17 @@ struct SimilarPhotosView: View {
         return direction == "older" ? range.upperBound : range.lowerBound
     }
 
+    /// Row date label: month/day and time, adding the year only when the photo
+    /// isn't from the current year.
+    private static func rowDate(_ date: Date) -> String {
+        let cal = Calendar.current
+        let base = Date.FormatStyle.dateTime.month().day().hour().minute()
+        let format = cal.component(.year, from: date) == cal.component(.year, from: Date())
+            ? base
+            : base.year()
+        return date.formatted(format)
+    }
+
     /// "12 groups" once fully scanned, or "12 groups & more" while photos
     /// remain to be scanned.
     private var countLabel: String {
@@ -148,7 +159,7 @@ struct SimilarPhotosView: View {
                                 PhotoThumbnail(identifier: group.photos[0].id, size: 72)
                                 VStack(alignment: .leading) {
                                     Text("\(group.photos.count) similar photos")
-                                    Text(group.photos[0].date, format: .dateTime.month().day().hour().minute())
+                                    Text(Self.rowDate(group.photos[0].date))
                                         .font(.caption).foregroundStyle(.secondary)
                                     Text("Choose photos to keep").font(.caption)
                                 }
