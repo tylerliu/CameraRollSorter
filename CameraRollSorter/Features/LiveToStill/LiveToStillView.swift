@@ -41,6 +41,8 @@ struct LiveToStillView: View {
     @State private var viewportFrame: CGRect = .zero
     @State private var dragLocation: CGPoint = .zero
     @State private var autoScrollDir = 0
+    // 0→1 ramp of how deep the finger is into the edge margin; scales scroll speed.
+    @State private var autoScrollIntensity: Double = 0
     private let edgeMargin: CGFloat = 70
 
     private let columns = [GridItem(.adaptive(minimum: 110), spacing: 3)]
@@ -286,23 +288,35 @@ struct LiveToStillView: View {
         if let index = itemIndex(at: point) { paintRange(toIndex: index) }
     }
 
-    /// Set the auto-scroll direction from the finger's distance to the viewport
-    /// edges: near the top scroll up, near the bottom scroll down, else stop.
+    /// Set the auto-scroll direction AND intensity from the finger's distance to
+    /// the viewport edges. Intensity ramps 0→1 across the edge margin (0 at the
+    /// margin boundary, 1 at the very edge), so scrolling starts slow and speeds
+    /// up the closer the finger gets to the edge.
     private func updateAutoScroll(for point: CGPoint) {
         guard viewportFrame.height > 0 else { autoScrollDir = 0; return }
-        if point.y < viewportFrame.minY + edgeMargin { autoScrollDir = -1 }
-        else if point.y > viewportFrame.maxY - edgeMargin { autoScrollDir = 1 }
-        else { autoScrollDir = 0 }
+        let topZone = viewportFrame.minY + edgeMargin
+        let bottomZone = viewportFrame.maxY - edgeMargin
+        if point.y < topZone {
+            autoScrollDir = -1
+            autoScrollIntensity = min(1, (topZone - point.y) / edgeMargin)
+        } else if point.y > bottomZone {
+            autoScrollDir = 1
+            autoScrollIntensity = min(1, (point.y - bottomZone) / edgeMargin)
+        } else {
+            autoScrollDir = 0
+        }
     }
 
-    /// While the finger sits in an edge margin, step the scroll toward the next
-    /// off-screen row and extend the selection to that row, so the range grows
-    /// in the scroll direction as new rows come into view.
+    /// While the finger sits in an edge margin, step the scroll toward off-screen
+    /// rows and extend the selection to reach them. The step size scales with
+    /// `autoScrollIntensity` (edge proximity), so it accelerates from ~1 row per
+    /// tick at the margin boundary to `maxScrollStep` rows at the very edge.
     private func runAutoScroll(proxy: ScrollViewProxy) async {
+        let maxScrollStep = 8
         while autoScrollDir != 0 {
             let dir = autoScrollDir
-            // Scroll to a target a few rows beyond the current visible edge.
-            let step = 3
+            // 1 row at intensity 0 → maxScrollStep rows at intensity 1.
+            let step = 1 + Int((Double(maxScrollStep - 1) * autoScrollIntensity).rounded())
             let targetIndex: Int
             if dir < 0 {
                 targetIndex = max(0, (scrollTracker.minVisibleIndex ?? 0) - step)
