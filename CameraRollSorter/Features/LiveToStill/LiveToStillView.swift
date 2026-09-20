@@ -79,14 +79,30 @@ struct LiveToStillView: View {
         Binding(get: { selection }, set: { if let new = $0 { selection = new } })
     }
 
+    @State private var didRestoreScroll = false
+
     private var grid: some View {
-        ScrollView {
-            LazyVGrid(columns: columns, spacing: 3) {
-                ForEach(model.items) { item in
-                    cell(for: item)
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVGrid(columns: columns, spacing: 3) {
+                    ForEach(model.items) { item in
+                        cell(for: item).id(item.id)
+                    }
                 }
+                .padding(3)
+                .scrollTargetLayout()
             }
-            .padding(3)
+            // `.scrollPosition` accurately tracks the leading (top) visible cell
+            // into the model as the user scrolls.
+            .scrollPosition(id: $model.scrollAnchorID, anchor: .top)
+            // On first appear of this view instance, nudge back to the remembered
+            // cell (a lazy grid won't auto-restore an unmaterialized cell). Guard
+            // so continued scroll tracking isn't overridden.
+            .onAppear {
+                guard !didRestoreScroll, let id = model.scrollAnchorID else { return }
+                didRestoreScroll = true
+                DispatchQueue.main.async { proxy.scrollTo(id, anchor: .top) }
+            }
         }
     }
 

@@ -5,7 +5,7 @@ import SwiftUI
 /// similarity groups and links each into the chooser. Shares the library model
 /// owned by the home screen, so scan state and results stay in sync.
 struct SimilarPhotosView: View {
-    let library: PhotoLibraryModel
+    @Bindable var library: PhotoLibraryModel
 
     // Scan controls live here (not in settings) so they can be adjusted while
     // reviewing. They're pinned above the list. Changing any of them calls
@@ -14,6 +14,12 @@ struct SimilarPhotosView: View {
     @AppStorage("review.scanDirection") private var scanDirection = "older"
     @AppStorage("review.scanStartEnabled") private var scanStartEnabled = false
     @AppStorage("review.scanStartDate") private var scanStartInterval = 0.0
+    @State private var didAttemptRestore = false
+    @State private var didRestoreScroll = false
+    // Indices of group rows currently on screen. The topmost (smallest) one is
+    // remembered as the scroll anchor. A Set is used so the scan appending rows
+    // at the bottom never changes which row is topmost-visible.
+    @State private var visibleIndices: Set<Int> = []
 
     private var scanStartDate: Binding<Date> {
         Binding(
@@ -60,6 +66,16 @@ struct SimilarPhotosView: View {
             ? base
             : base.year()
         return date.formatted(format)
+    }
+
+    /// Remember the topmost visible group as the scroll anchor. Skipped until
+    /// the initial restore has run, so navigating back doesn't overwrite the
+    /// saved anchor with the (top-of-list) rows shown before the restore jump.
+    private func updateAnchor() {
+        guard didRestoreScroll || library.scrollAnchorID == nil else { return }
+        guard let topIndex = visibleIndices.min(),
+              library.groups.indices.contains(topIndex) else { return }
+        library.scrollAnchorID = library.groups[topIndex].id
     }
 
     /// "12 groups" once fully scanned, or "12 groups & more" while photos
@@ -130,6 +146,7 @@ struct SimilarPhotosView: View {
     }
 
     private var list: some View {
+        ScrollViewReader { proxy in
         List {
             Section {
                 Text("Similarity distance ≤ \(library.threshold, format: .number.precision(.fractionLength(2))) · change in review settings")
@@ -167,9 +184,21 @@ struct SimilarPhotosView: View {
                                 }
                             }
                         }
-                        // Keep a rolling buffer of groups scanned ahead of the
-                        // row being viewed.
-                        .onAppear { library.scanMore(currentIndex: index) }
+                        .id(group.id)
+                        // Keep a rolling buffer scanned ahead of the viewed row,
+                        // and track which rows are on screen so we can remember
+                        // the topmost one across navigation. Tracking the visible
+                        // SET (not last-appeared) is immune to the scan appending
+                        // new rows at the bottom.
+                        .onAppear {
+                            library.scanMore(currentIndex: index)
+                            visibleIndices.insert(index)
+                            updateAnchor()
+                        }
+                        .onDisappear {
+                            visibleIndices.remove(index)
+                            updateAnchor()
+                        }
                     }
                 }
 
@@ -183,5 +212,22 @@ struct SimilarPhotosView: View {
             }
         }
         .refreshable { library.refresh() }
+        // On first appear of this view instance, jump back to the remembered
+        // group (a List won't auto-restore an unmaterialized row). Enable anchor
+        // tracking only AFTER the restore scroll completes, so the top-of-list
+        // rows shown pre-jump don't overwrite the saved anchor.
+        .onAppear {
+            guard !didAttemptRestore else { return }
+            didAttemptRestore = true
+            guard let id = library.scrollAnchorID else { didRestoreScroll = true; return }
+            DispatchQueue.main.async {
+                proxy.scrollTo(id, anchor: .top)
+                // Let the scroll settle before re-enabling tracking.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    didRestoreScroll = true
+                }
+            }
+        }
+        }
     }
 }

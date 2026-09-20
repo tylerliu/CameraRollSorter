@@ -72,6 +72,9 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
     // Furthest group row the viewer has reached. The scan keeps ~targetGroupCount
     // groups scanned ahead of this, so the buffer rolls forward as you scroll.
     private var scanAheadOf = 0
+    // Top-visible group id, so the Similar list restores scroll position when
+    // navigating away and back within a session. Not persisted across launches.
+    var scrollAnchorID: String?
     // Anchors processed per incremental step. The initial scan uses a larger
     // batch to fill the first results quickly; once scanned, forward scanning
     // (driven by scrolling) uses a smaller batch so it stays responsive and
@@ -152,6 +155,7 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
         scannedIDs = []
         scanProgression = []
         scanAheadOf = 0
+        scrollAnchorID = nil
         isScanning = true
         scanTask = Task {
             let result = await scanner.scan()
@@ -404,6 +408,7 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
         scannedIDs = []
         scanProgression = []
         scanAheadOf = 0
+        scrollAnchorID = nil
         revision = UUID()
         applyThreshold()   // clears the visible list immediately
         progress = "Reading photo dates…"
@@ -426,7 +431,7 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
         windowPruneTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             guard !Task.isCancelled else { return }
-            await self?.pruneCacheToWindow(direction: direction, startDate: startDate)
+            self?.pruneCacheToWindow(direction: direction, startDate: startDate)
         }
     }
 

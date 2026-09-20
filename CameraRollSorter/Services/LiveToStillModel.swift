@@ -34,6 +34,9 @@ final class LiveToStillModel {
     var isScanning = false
     var hasScanned = false
     var errorMessage: String?
+    // Remembers the top-visible grid item so scroll position is restored when
+    // navigating away and back within a session. Not persisted across launches.
+    var scrollAnchorID: String?
 
     private let scanner = LivePhotoScanner()
     private var scanTask: Task<Void, Never>?
@@ -56,6 +59,7 @@ final class LiveToStillModel {
             let found = await scanner.scan()
             guard !Task.isCancelled else { return }
             items = found
+            scrollAnchorID = nil   // fresh results start at the top
             isScanning = false
             hasScanned = true
         }
