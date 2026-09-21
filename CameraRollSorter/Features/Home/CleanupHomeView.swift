@@ -7,6 +7,7 @@ import SwiftUI
 struct CleanupHomeView: View {
     @State private var library = PhotoLibraryModel()
     @State private var liveToStill = LiveToStillModel()
+    @State private var blurry = BlurryPhotosModel()
     @State private var showsSettings = false
     @State private var showsLimitedPicker = false
     @Environment(\.scenePhase) private var scenePhase
@@ -24,7 +25,14 @@ struct CleanupHomeView: View {
                     Button("Review settings", systemImage: "slider.horizontal.3") { showsSettings = true }
                 }
             }
-            .sheet(isPresented: $showsSettings, onDismiss: library.applySettings) { ReviewSettingsView() }
+            .sheet(isPresented: $showsSettings) {
+                // Both models re-read their persisted settings on dismiss: the
+                // similar-photos scan settings and the blurry sensitivity.
+                library.applySettings()
+                blurry.applySensitivity()
+            } content: {
+                ReviewSettingsView()
+            }
             .background {
                 LimitedLibraryPicker(isPresented: $showsLimitedPicker) {
                     // Selecting more photos under limited access is an add,
@@ -37,6 +45,7 @@ struct CleanupHomeView: View {
         .task {
             library.refresh()
             liveToStill.scan()
+            blurry.scan()
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
@@ -44,6 +53,7 @@ struct CleanupHomeView: View {
                 // Incremental reconcile (add/remove) rather than a full rescan,
                 // so returning from the delete confirmation doesn't reset scroll.
                 Task { await liveToStill.syncLibrary() }
+                Task { await blurry.syncLibrary() }
             }
         }
     }
@@ -71,6 +81,15 @@ struct CleanupHomeView: View {
                         detail: liveToStillDetail
                     )
                 }
+                NavigationLink {
+                    BlurryPhotosView(model: blurry)
+                } label: {
+                    CategoryRow(
+                        title: "Blurry photos",
+                        systemImage: "camera.metering.none",
+                        detail: blurryDetail
+                    )
+                }
             }
         }
     }
@@ -90,6 +109,23 @@ struct CleanupHomeView: View {
         let unit = liveToStill.items.count == 1 ? "photo" : "photos"
         let suffix = liveToStill.hasMoreToScan ? " & more" : ""
         return .text("\(liveToStill.items.count) \(unit)\(suffix)")
+    }
+
+    /// Subtitle for the Blurry photos row: scan progress or a live count with
+    /// "& more" while classification is still in progress.
+    private var blurryDetail: CategoryRow.Detail {
+        if blurry.isScanning && blurry.items.isEmpty {
+            return .progress("")
+        }
+        if !blurry.hasScanned && blurry.items.isEmpty {
+            return .text("Tap to scan")
+        }
+        if blurry.hasScanned && blurry.items.isEmpty && !blurry.hasMoreToScan {
+            return .text("None found")
+        }
+        let unit = blurry.items.count == 1 ? "photo" : "photos"
+        let suffix = blurry.hasMoreToScan ? " & more" : ""
+        return .text("\(blurry.items.count) \(unit)\(suffix)")
     }
 
     /// Subtitle for the Similar photos row: scan progress or a result summary.

@@ -5,6 +5,7 @@ struct ReviewSettingsView: View {
     @AppStorage("review.geoGateEnabled") private var geoGateEnabled = true
     @AppStorage("review.geoGateKilometers") private var geoGateKilometers = 1.0
     @AppStorage("review.initialGroupTarget") private var initialGroupTarget = 200
+    @AppStorage(BlurSensitivity.storageKey) private var blurSensitivity = BlurSensitivity.medium.rawValue
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -30,6 +31,15 @@ struct ReviewSettingsView: View {
                     .accessibilityLabel("Groups to find before pausing the initial scan")
                     .accessibilityValue("\(initialGroupTarget)")
                     Text("The scan pauses once this many similar-photo groups are found, so results appear quickly. Scrolling to the end scans more. Default 200. Changes take effect on the next scan.")
+                        .foregroundStyle(.secondary)
+                }
+                Section("Blurry photos") {
+                    Picker("Sensitivity", selection: $blurSensitivity) {
+                        Text("Low").tag(BlurSensitivity.low.rawValue)
+                        Text("Medium").tag(BlurSensitivity.medium.rawValue)
+                        Text("High").tag(BlurSensitivity.high.rawValue)
+                    }
+                    Text("Higher sensitivity flags more photos as blurry. Changes re-check your photos next time you open Blurry photos.")
                         .foregroundStyle(.secondary)
                 }
                 Section("Location shortcut") {
