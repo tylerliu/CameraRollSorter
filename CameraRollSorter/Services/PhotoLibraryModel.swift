@@ -428,14 +428,16 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
         }
     }
 
-    /// Debounced data-layer cleanup: 2s after the last scan-scope change, drop
-    /// cached pairs for photos no longer in the window. Reruns reset the timer,
-    /// so a burst of adjustments prunes once, at the end — keeping the previous
-    /// window available for reuse in the meantime.
+    /// Debounced data-layer cleanup: after the last scan-scope change settles,
+    /// drop cached pairs for photos no longer in the window. Reruns reset the
+    /// timer, so a burst of adjustments prunes once. The delay is generous so a
+    /// user still deciding on a date in the calendar (which can pause well over
+    /// a couple seconds between taps) doesn't evict the reuse cache — the prune
+    /// is purely a memory optimization and never affects the displayed list.
     private func scheduleCachePrune(direction: ScanDirection, startDate: Date?) {
         windowPruneTask?.cancel()
         windowPruneTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            try? await Task.sleep(nanoseconds: 10_000_000_000)
             guard !Task.isCancelled else { return }
             self?.pruneCacheToWindow(direction: direction, startDate: startDate)
         }

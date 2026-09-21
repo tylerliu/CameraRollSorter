@@ -10,6 +10,9 @@ struct ScanControlsHeader: View {
     @Binding var direction: String          // "older" (New→Old) or "newer" (Old→New)
     @Binding var startEnabled: Bool
     @Binding var startInterval: Double      // seconds since 1970; 0 = unset
+    // Whether the wheel picker is expanded. Collapses when not picking so it
+    // doesn't take up vertical space (the date label button toggles it).
+    @State private var wheelExpanded = false
     /// Capture-date span of the owning list, used to bound and seed the picker.
     let dateRange: ClosedRange<Date>?
     /// Called after any control change so the owner can reconcile its scan.
@@ -64,19 +67,34 @@ struct ScanControlsHeader: View {
                     .toggleStyle(.button)
                     .onChange(of: startEnabled) { _, isOn in
                         if isOn { startInterval = defaultStart().timeIntervalSince1970 }
+                        wheelExpanded = isOn      // reveal the wheel when turning on
                         onChange()
                     }
                 if startEnabled {
-                    Group {
-                        if let dateRange {
-                            DatePicker("", selection: startDate, in: dateRange, displayedComponents: .date)
-                        } else {
-                            DatePicker("", selection: startDate, displayedComponents: .date)
-                        }
+                    // Compact date label; tap to expand/collapse the wheel so it
+                    // only takes up space while actually picking.
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) { wheelExpanded.toggle() }
+                    } label: {
+                        Text(startDate.wrappedValue, format: .dateTime.year().month().day())
+                            .font(.subheadline)
                     }
-                    .labelsHidden()
+                    .buttonStyle(.bordered)
                 }
                 Spacer()
+            }
+            // Wheel (year/month/day rollers) shown only while expanded, so it
+            // doesn't take up space the rest of the time — like the old popover.
+            if startEnabled && wheelExpanded {
+                Group {
+                    if let dateRange {
+                        DatePicker("", selection: startDate, in: dateRange, displayedComponents: .date)
+                    } else {
+                        DatePicker("", selection: startDate, displayedComponents: .date)
+                    }
+                }
+                .labelsHidden()
+                .datePickerStyle(.wheel)
             }
         }
         .padding(.horizontal)
