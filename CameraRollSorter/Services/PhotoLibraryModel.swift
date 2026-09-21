@@ -226,23 +226,30 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
                 .filter { !measured.contains($0) }
 
             isScanningBatch = true
+            // Compute the valid-id set ONCE per batch (not per callback) so
+            // appends stay cheap as pairs grow.
+            let ids = Set(photos.map(\.id))
             do {
                 let scores = try await analyzer.analyzeComparisons(
                     batchComparisons,
                     partialResults: { [self] newPairs in
                         guard self.revision == token else { return }
-                        let ids = Set(self.photos.map(\.id))
                         self.pairs.append(contentsOf: newPairs.filter {
                             ids.contains($0.first) && ids.contains($0.second)
                         })
-                        self.applyThreshold()
+                        // Regroup at most ~5×/sec during a batch instead of on
+                        // every 5-pair callback; a full regroup is O(photos+pairs)
+                        // and runs on the main actor, so coalescing avoids the lag.
+                        self.applyThresholdThrottled()
                     }
                 )
                 guard revision == token, !Task.isCancelled else { isScanningBatch = false; return }
-                let ids = Set(photos.map(\.id))
+                // Dedup against pairs already delivered via partialResults using
+                // a Set lookup (was an O(newPairs × pairs) linear scan).
+                var knownPairIDs = Set(pairs.map(\.id))
                 pairs.append(contentsOf: scores.pairs.filter { score in
                     ids.contains(score.first) && ids.contains(score.second)
-                        && !pairs.contains { $0.id == score.id }
+                        && knownPairIDs.insert(score.id).inserted
                 })
                 unavailablePhotoIDs.formUnion(scores.unavailableIDs.intersection(ids))
             } catch is CancellationError {
@@ -264,6 +271,21 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
             applyThreshold()
         }
         isScanningBatch = false
+    }
+
+    // Last time a live regroup ran, to coalesce the frequent partial-results
+    // regroups during a batch (a full regroup is O(photos+pairs) on main).
+    private var lastLiveRegroup = Date.distantPast
+    private let liveRegroupInterval = 0.2
+
+    /// Regroup at most every `liveRegroupInterval` seconds. Used for the
+    /// streaming partial results; the authoritative regroup still runs once at
+    /// the end of each batch via `applyThreshold()`.
+    private func applyThresholdThrottled() {
+        let now = Date()
+        guard now.timeIntervalSince(lastLiveRegroup) >= liveRegroupInterval else { return }
+        lastLiveRegroup = now
+        applyThreshold()
     }
 
     func applyThreshold() {
@@ -591,14 +613,15 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
                 partialResults: { [weak self] newPairs in
                     guard let self, self.revision == token else { return }
                     self.pairs.append(contentsOf: newPairs)
-                    self.applyThreshold()
+                    self.applyThresholdThrottled()
                 }
             )
             guard revision == token else { return }
             let currentIDs = Set(photos.map(\.id))
+            var knownPairIDs = Set(pairs.map(\.id))
             pairs.append(contentsOf: scores.pairs.filter { score in
                 currentIDs.contains(score.first) && currentIDs.contains(score.second)
-                    && !pairs.contains { $0.id == score.id }
+                    && knownPairIDs.insert(score.id).inserted
             })
             unavailablePhotoIDs.formUnion(scores.unavailableIDs.intersection(currentIDs))
             applyThreshold()
