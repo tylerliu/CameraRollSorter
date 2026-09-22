@@ -21,14 +21,16 @@ final class ScrollAnchorTracker {
     func onRowDisappear(_ index: Int) { visibleIndices.remove(index) }
 
     /// Smallest/largest on-screen row index (for edge auto-scroll targeting).
+    /// Ungated — auto-scroll needs these regardless of restore state.
     var minVisibleIndex: Int? { visibleIndices.min() }
     var maxVisibleIndex: Int? { visibleIndices.max() }
 
-    /// The id of the topmost visible row, resolved via `ids`, or nil until
-    /// tracking is enabled (after the restore settles) or when nothing's shown.
-    func topVisibleID(in ids: [String]) -> String? {
-        guard trackingEnabled, let top = visibleIndices.min(), ids.indices.contains(top) else { return nil }
-        return ids[top]
+    /// Topmost visible row index for SAVING the anchor — nil until tracking is
+    /// enabled (after the restore settles) so the pre-jump top rows don't
+    /// clobber the saved anchor. Callers index their own item array with this,
+    /// avoiding a per-event allocation of the full id array.
+    var topVisibleIndexForAnchor: Int? {
+        trackingEnabled ? visibleIndices.min() : nil
     }
 
     /// Jump back to `anchorID` once, on the container's first appear (a lazy

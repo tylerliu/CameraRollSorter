@@ -3,7 +3,6 @@ import SwiftUI
 
 struct PhotoChooserView: View {
     let sequence: PhotoSequence
-    let measuredPairs: [SimilarityPair]
     let library: PhotoLibraryModel
 
     @Environment(\.dismiss) private var dismiss
@@ -16,9 +15,12 @@ struct PhotoChooserView: View {
     @State private var isPreviewZoomed = false
 
     /// Photos ordered so the most-similar shots are adjacent (spine ordering),
-    /// making filmstrip scrubbing act as flicker comparison. Computed once from
-    /// the group's measured pairs at the current threshold.
-    private let orderedPhotos: [TimedPhoto]
+    /// making filmstrip scrubbing act as flicker comparison. Computed once in
+    /// `.task` (NOT in init) so building this view as a NavigationLink
+    /// destination stays cheap and never lags the list while scrolling. Starts
+    /// as the group's own order until the ordering pass completes.
+    @State private var orderedPhotos: [TimedPhoto]
+    @State private var didOrder = false
 
     // Aesthetics-based "best photo" hint. Purely a visual suggestion — it never
     // changes the keep list, deletion, ordering, or grouping. Runs on its own
@@ -26,17 +28,13 @@ struct PhotoChooserView: View {
     @State private var bestIDs: Set<String> = []
     private let aestheticsScorer = AestheticsScorer()
 
-    init(sequence: PhotoSequence, measuredPairs: [SimilarityPair], library: PhotoLibraryModel) {
+    init(sequence: PhotoSequence, library: PhotoLibraryModel) {
         self.sequence = sequence
-        self.measuredPairs = measuredPairs
         self.library = library
         _keptIDs = State(initialValue: Set(sequence.photos.map(\.id)))
-        // Reorder for flicker comparison: most-similar shots become adjacent.
-        self.orderedPhotos = SimilarityGrouping.similarityOrder(
-            photos: sequence.photos,
-            pairs: measuredPairs,
-            threshold: library.threshold
-        )
+        // Cheap init: show the group's own order immediately; the (expensive)
+        // similarity ordering runs in `.task` after the view appears.
+        _orderedPhotos = State(initialValue: sequence.photos)
         // Set after the filmstrip's first layout so scrollPosition performs an
         // actual initial scroll instead of treating the value as already applied.
         _centeredPhotoID = State(initialValue: nil)
@@ -66,9 +64,25 @@ struct PhotoChooserView: View {
             }
         }
         .task(id: sequence.id) {
+            // Compute the flicker-comparison ordering here (not in init) so the
+            // list stays smooth: building this view as a NavigationLink
+            // destination must be cheap. The MST/spine work runs off the main
+            // actor, then the ordered result is applied.
+            guard !didOrder else { return }
+            let photos = sequence.photos
+            let pairs = library.scores(for: sequence)
+            let threshold = library.threshold
+            let ordered = await Task.detached(priority: .userInitiated) {
+                SimilarityGrouping.similarityOrder(photos: photos, pairs: pairs, threshold: threshold)
+            }.value
+            guard !Task.isCancelled else { return }
+            orderedPhotos = ordered
+            didOrder = true
+        }
+        .task(id: sequence.id) {
             // Score the open group's photos for a best-shot suggestion. Runs on
             // a dedicated actor, independent of the library similarity scan.
-            let ids = orderedPhotos.map(\.id)
+            let ids = sequence.photos.map(\.id)
             let result = await aestheticsScorer.score(identifiers: ids)
             guard !Task.isCancelled else { return }
             bestIDs = BestPhotoSelector.bestIDs(from: result)

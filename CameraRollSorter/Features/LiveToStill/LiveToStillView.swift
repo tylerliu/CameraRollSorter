@@ -132,11 +132,11 @@ struct LiveToStillView: View {
 
     @State private var scrollTracker = ScrollAnchorTracker()
 
-    /// Save the topmost visible cell as the scroll anchor on the model.
+    /// Save the topmost visible cell as the scroll anchor on the model. Indexes
+    /// directly (no per-event allocation of the full id array).
     private func updateAnchor() {
-        if let id = scrollTracker.topVisibleID(in: model.items.map(\.id)) {
-            model.scrollAnchorID = id
-        }
+        guard let top = scrollTracker.topVisibleIndexForAnchor, model.items.indices.contains(top) else { return }
+        model.scrollAnchorID = model.items[top].id
     }
 
     private var grid: some View {

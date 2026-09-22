@@ -20,11 +20,11 @@ struct SimilarPhotosView: View {
         return date.formatted(format)
     }
 
-    /// Save the topmost visible group as the scroll anchor on the model.
+    /// Save the topmost visible group as the scroll anchor on the model. Indexes
+    /// directly (no per-event allocation of the full id array).
     private func updateAnchor() {
-        if let id = scrollTracker.topVisibleID(in: library.groups.map(\.id)) {
-            library.scrollAnchorID = id
-        }
+        guard let top = scrollTracker.topVisibleIndexForAnchor, library.groups.indices.contains(top) else { return }
+        library.scrollAnchorID = library.groups[top].id
     }
 
     /// "12 groups" once fully scanned, or "12 groups & more" while photos
@@ -83,7 +83,7 @@ struct SimilarPhotosView: View {
                     }
                     ForEach(Array(library.groups.enumerated()), id: \.element.id) { index, group in
                         NavigationLink {
-                            PhotoChooserView(sequence: group, measuredPairs: library.scores(for: group), library: library)
+                            PhotoChooserView(sequence: group, library: library)
                         } label: {
                             HStack {
                                 PhotoThumbnail(identifier: group.photos[0].id, size: 72)
