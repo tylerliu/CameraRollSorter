@@ -1,13 +1,17 @@
 import Foundation
 import Observation
 import Photos
+import UIKit
+import Vision
 
-/// A detected blurry photo. Parallels `LivePhotoItem`; `variance` is the
-/// Laplacian-variance blur score, kept for debugging and future score blending.
+/// A detected low-aesthetic photo. Parallels `LivePhotoItem`; `score` is the
+/// Vision overall aesthetics score (higher is better) — a photo is flagged
+/// when it is non-utility and its score falls below the active cutoff. The
+/// stored score lets a *lowering* sensitivity change re-filter in place.
 struct BlurryPhotoItem: Identifiable, Sendable {
     let id: String          // PHAsset.localIdentifier
     let date: Date
-    let variance: Double     // Laplacian variance; lower means more blur
+    let score: Double        // Vision overall aesthetics score; lower is worse
 }
 
 /// Errors surfaced by the blurry-photos deletion flow. Parallels
@@ -37,9 +41,9 @@ func isScannable(mediaType: PHAssetMediaType, mediaSubtypes: PHAssetMediaSubtype
     return !mediaSubtypes.contains(.photoScreenshot)
 }
 
-/// Background actor that finds blurry-photo candidates and classifies them.
+/// Background actor that finds low-aesthetic candidates and classifies them.
 /// Mirrors `LivePhotoScanner`: the fetch is metadata-only and fast; the
-/// per-batch classification does the image decode + Laplacian-variance work.
+/// per-batch classification runs Vision's image-aesthetics request per photo.
 private actor BlurryPhotoScanner {
     /// Fast metadata-only fetch of every scan candidate (id + date). The
     /// `.image` media type already excludes videos (Requirements 3.1, 3.2), and
@@ -62,20 +66,29 @@ private actor BlurryPhotoScanner {
         return result
     }
 
-    /// Classify a batch of candidate ids, returning only those whose Laplacian
-    /// variance is below `cutoff`, in candidate order. Each id is scored inside
-    /// its own `autoreleasepool` so the decoded image buffers are released
-    /// promptly across a large batch. Ids whose downscaled image can't be
-    /// loaded locally are dropped (Requirement 2.6).
-    func blurryItems(in ids: [String], cutoff: Double) -> [BlurryPhotoItem] {
+    /// Classify a batch of candidate ids using Vision's image-aesthetics
+    /// request, returning only the LOW-aesthetic ones in candidate order: a
+    /// photo qualifies when Vision does NOT flag it as "utility" (screenshots,
+    /// receipts, documents) AND its overall aesthetics score is below `cutoff`.
+    /// Each id is scored inside its own `autoreleasepool` so decoded buffers are
+    /// released promptly across a large batch.
+    ///
+    /// Ids whose downscaled image can't be loaded locally, and any id Vision
+    /// can't score (notably the Simulator, where the request throws), are
+    /// dropped — the flow simply shows nothing for those rather than fabricating
+    /// a score.
+    func lowAestheticItems(in ids: [String], cutoff: Double) -> [BlurryPhotoItem] {
+        guard #available(iOS 18.0, *) else { return [] }
         var items: [BlurryPhotoItem] = []
         for id in ids {
             autoreleasepool {
-                guard let variance = BlurClassifier.laplacianVariance(for: id) else { return }
-                guard variance < cutoff else { return }
+                guard let cgImage = PhotoImageLoading.synchronousImage(for: id, targetSize: 512)?.cgImage else { return }
+                guard let score = try? AestheticsRequestRunner.score(for: cgImage) else { return }
+                // Non-utility only, and below the low-aesthetic cutoff.
+                guard !score.isUtility, Double(score.overall) < cutoff else { return }
                 guard let date = PHAsset.fetchAssets(withLocalIdentifiers: [id], options: nil)
                     .firstObject?.creationDate else { return }
-                items.append(BlurryPhotoItem(id: id, date: date, variance: variance))
+                items.append(BlurryPhotoItem(id: id, date: date, score: Double(score.overall)))
             }
         }
         return items
@@ -223,9 +236,9 @@ final class BlurryPhotosModel: NSObject, PHPhotoLibraryChangeObserver {
             let start = classifiedCount
             let end = min(start + batchSize, candidates.count)
             let batchIDs = candidates[start..<end].map(\.id)
-            let blurry = await scanner.blurryItems(in: batchIDs, cutoff: activeCutoff)
+            let blurry = await scanner.lowAestheticItems(in: batchIDs, cutoff: activeCutoff)
             if Task.isCancelled { return }
-            // Preserve window order: `blurryItems` returns candidate-ordered
+            // Preserve window order: `lowAestheticItems` returns candidate-ordered
             // results, but append via lookup to keep the invariant explicit.
             let byID = Dictionary(blurry.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
             for id in batchIDs {
@@ -293,7 +306,7 @@ final class BlurryPhotosModel: NSObject, PHPhotoLibraryChangeObserver {
             // no re-scan, no classifier work. This also keeps scroll position
             // (we only remove rows).
             scanTask?.cancel()
-            items = items.filter { BlurSensitivity.isBlurry(variance: $0.variance, cutoff: newCutoff) }
+            items = items.filter { BlurSensitivity.isBlurry(variance: $0.score, cutoff: newCutoff) }
             // Note: classifiedCount/candidates are unchanged — we've merely
             // tightened the filter over the SAME already-classified prefix. Do
             // NOT reset them.
@@ -424,7 +437,7 @@ final class BlurryPhotosModel: NSObject, PHPhotoLibraryChangeObserver {
         // unclassified tail for scanMore.
         let addedInside = added.isEmpty ? [] : candidates.prefix(classifiedCount).map(\.id).filter { added.contains($0) }
         if !addedInside.isEmpty {
-            let newItems = await scanner.blurryItems(in: addedInside, cutoff: activeCutoff)
+            let newItems = await scanner.lowAestheticItems(in: addedInside, cutoff: activeCutoff)
             let blurryAdded = Set(newItems.map(\.id))
             // Rebuild `items` in window order over the classified prefix so the
             // new ones land in their correct position (not at the end).

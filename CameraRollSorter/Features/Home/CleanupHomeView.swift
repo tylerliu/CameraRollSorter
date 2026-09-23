@@ -85,8 +85,8 @@ struct CleanupHomeView: View {
                     BlurryPhotosView(model: blurry)
                 } label: {
                     CategoryRow(
-                        title: "Blurry photos",
-                        systemImage: "camera.metering.none",
+                        title: "Low-aesthetic",
+                        systemImage: "wand.and.stars",
                         detail: blurryDetail
                     )
                 }
@@ -111,7 +111,7 @@ struct CleanupHomeView: View {
         return .text("\(liveToStill.items.count) \(unit)\(suffix)")
     }
 
-    /// Subtitle for the Blurry photos row: scan progress or a live count with
+    /// Subtitle for the Low-aesthetic row: scan progress or a live count with
     /// "& more" while classification is still in progress.
     private var blurryDetail: CategoryRow.Detail {
         if blurry.isScanning && blurry.items.isEmpty {

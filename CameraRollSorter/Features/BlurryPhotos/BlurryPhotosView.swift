@@ -1,9 +1,9 @@
 import Photos
 import SwiftUI
 
-/// Detail screen for the "Blurry photos" category. Lists photos the classifier
-/// flagged as out of focus (Laplacian variance below the active sensitivity
-/// cutoff) and lets the user delete the ones they no longer want. Owns its own
+/// Detail screen for the "Low-aesthetic" category. Lists non-utility photos
+/// that Vision's image-aesthetics request scored below the active sensitivity
+/// cutoff, and lets the user delete the ones they no longer want. Owns its own
 /// model so scanning runs independently of the other cleanup flows.
 ///
 /// The grid, selection, drag-select, detail pager, scan-controls header, and
@@ -36,15 +36,16 @@ struct BlurryPhotosView: View {
             scanStartEnabled: $model.scanStartEnabled,
             scanStartInterval: $model.scanStartInterval,
             libraryDateRange: model.libraryDateRange,
-            navigationTitle: "Blurry photos",
-            scanningText: "Finding blurry photos…",
+            navigationTitle: "Low-aesthetic",
+            scanningText: "Finding low-aesthetic photos…",
             emptyState: AnyView(
                 ContentUnavailableView(
-                    "No blurry photos",
-                    systemImage: "camera.metering.none",
-                    description: Text("No blurry photos were found in this range. Try a higher sensitivity in Settings, or widen the scan window. Photos unavailable locally can’t be checked.")
+                    "No low-aesthetic photos",
+                    systemImage: "wand.and.stars",
+                    description: Text("No low-aesthetic photos were found in this range. Try a higher sensitivity in Settings, or widen the scan window. Aesthetics scoring needs a physical device, and photos unavailable locally can’t be checked.")
                 )
             ),
+            showsNeighbors: true,
             actionBar: { isSelecting in actionBar(isSelecting: isSelecting) }
         )
         .alert("Couldn’t delete", isPresented: deletionAlertBinding) {
@@ -62,7 +63,7 @@ struct BlurryPhotosView: View {
             Divider()
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("\(model.items.count) blurry \(model.items.count == 1 ? "photo" : "photos")")
+                    Text("\(model.items.count) low-aesthetic \(model.items.count == 1 ? "photo" : "photos")")
                         .font(.subheadline.weight(.semibold))
                     Text(selectionHint(isSelecting: isSelecting))
                         .font(.caption).foregroundStyle(.secondary)

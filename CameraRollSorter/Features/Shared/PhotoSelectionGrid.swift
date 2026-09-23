@@ -62,6 +62,9 @@ struct PhotoSelectionGrid<ActionBar: View>: View {
     let scanningText: String
     /// The empty state shown when a scan completed with no results.
     let emptyState: AnyView
+    /// When true, the full-screen detail view shows a strip of each photo's
+    /// nearest temporal neighbors. Used by the Low-aesthetic flow; off elsewhere.
+    var showsNeighbors: Bool = false
     /// Bottom action bar (Convert / Delete / …), rendered via safeAreaInset.
     /// Receives whether the grid is currently in select mode so the host can
     /// tailor its selection hint text (e.g. "Tap or drag to select").
@@ -141,7 +144,8 @@ struct PhotoSelectionGrid<ActionBar: View>: View {
             PhotoDetailPager(
                 identifiers: ids,
                 currentID: $detailID,
-                selection: optionalSelectionBinding
+                selection: optionalSelectionBinding,
+                showsNeighbors: showsNeighbors
             )
         }
     }

@@ -33,12 +33,12 @@ struct ReviewSettingsView: View {
                     Text("The scan pauses once this many similar-photo groups are found, so results appear quickly. Scrolling to the end scans more. Default 200. Changes take effect on the next scan.")
                         .foregroundStyle(.secondary)
                 }
-                Section("Blurry photos") {
-                    LabeledContent("Sensitivity", value: blurCutoff.formatted(.number.precision(.fractionLength(0))))
-                    Slider(value: $blurCutoff, in: BlurSensitivity.minCutoff...BlurSensitivity.maxCutoff, step: 1)
-                        .accessibilityLabel("Blur sensitivity")
-                        .accessibilityValue(blurCutoff.formatted(.number.precision(.fractionLength(0))))
-                    Text("Higher is more sensitive and flags more photos as blurry. Lowering re-checks your current results instantly; raising re-scans your photos next time you open Blurry photos.")
+                Section("Low-aesthetic") {
+                    LabeledContent("Sensitivity", value: blurCutoff.formatted(.number.precision(.fractionLength(2))))
+                    Slider(value: $blurCutoff, in: BlurSensitivity.minCutoff...BlurSensitivity.maxCutoff, step: 0.05)
+                        .accessibilityLabel("Low-aesthetic sensitivity")
+                        .accessibilityValue(blurCutoff.formatted(.number.precision(.fractionLength(2))))
+                    Text("Flags non-utility photos whose Vision aesthetics score falls below this cutoff. Higher is more sensitive and flags more photos. Lowering re-checks your current results instantly; raising re-scans next time you open Low-aesthetic. Scoring needs a physical device.")
                         .foregroundStyle(.secondary)
                 }
                 Section("Location shortcut") {

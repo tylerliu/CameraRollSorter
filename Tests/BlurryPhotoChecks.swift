@@ -90,34 +90,32 @@ enum BlurryPhotoChecks {
                   "Property 10: isBlurry(v,c1) implies isBlurry(v,c2) for v=\(variance), c1=\(c1), c2=\(c2)")
         }
 
-        // Set monotonicity: over a fixed random set of variances, the blurry set
-        // at a lower cutoff is a subset of the blurry set at a higher cutoff.
+        // Set monotonicity: over a fixed random set of aesthetics scores, the
+        // flagged set at a lower cutoff is a subset of the set at a higher one.
+        // Cutoffs span the real aesthetics range (negative included).
         for _ in 0..<iterations {
-            let variances = (0..<Int.random(in: 1...40, using: &rng)).map { _ in Double.random(in: -5...80, using: &rng) }
-            var c1 = Double.random(in: 0...60, using: &rng)
-            var c2 = Double.random(in: 0...60, using: &rng)
+            let scores = (0..<Int.random(in: 1...40, using: &rng)).map { _ in Double.random(in: -1.5...1.5, using: &rng) }
+            var c1 = Double.random(in: -1...1, using: &rng)
+            var c2 = Double.random(in: -1...1, using: &rng)
             if c1 > c2 { swap(&c1, &c2) } // ensure c1 <= c2
-            func blurrySet(_ cutoff: Double) -> Set<Int> {
-                Set(variances.indices.filter { BlurSensitivity.isBlurry(variance: variances[$0], cutoff: cutoff) })
+            func flaggedSet(_ cutoff: Double) -> Set<Int> {
+                Set(scores.indices.filter { BlurSensitivity.isBlurry(variance: scores[$0], cutoff: cutoff) })
             }
-            check(blurrySet(c1).isSubset(of: blurrySet(c2)),
-                  "Property 10: blurry set at cutoff \(c1) subset of blurry set at cutoff \(c2)")
+            check(flaggedSet(c1).isSubset(of: flaggedSet(c2)),
+                  "Property 10: flagged set at cutoff \(c1) subset of flagged set at cutoff \(c2)")
         }
 
-        // currentCutoff clamps into [minCutoff, maxCutoff] and defaults when
-        // unset / <= 0.
+        // currentCutoff clamps ANY stored value into [minCutoff, maxCutoff].
+        // Unlike the old variance metric, 0 and negatives are VALID stored
+        // cutoffs (aesthetics scores can be negative), so only a genuinely unset
+        // key yields the default — never a stored 0.
         for _ in 0..<iterations {
-            let raw = Double.random(in: -20...120, using: &rng)
+            let raw = Double.random(in: -5...5, using: &rng)
             UserDefaults.standard.set(raw, forKey: BlurSensitivity.storageKey)
             let current = BlurSensitivity.currentCutoff
-            if raw <= 0 {
-                check(current == BlurSensitivity.defaultCutoff,
-                      "Property 10: stored \(raw) <= 0 yields defaultCutoff")
-            } else {
-                let expected = min(max(raw, BlurSensitivity.minCutoff), BlurSensitivity.maxCutoff)
-                check(current == expected,
-                      "Property 10: stored \(raw) clamps into [minCutoff, maxCutoff] -> \(expected)")
-            }
+            let expected = min(max(raw, BlurSensitivity.minCutoff), BlurSensitivity.maxCutoff)
+            check(current == expected,
+                  "Property 10: stored \(raw) clamps into [minCutoff, maxCutoff] -> \(expected)")
             check(current >= BlurSensitivity.minCutoff && current <= BlurSensitivity.maxCutoff,
                   "Property 10: currentCutoff \(current) within [minCutoff, maxCutoff]")
         }
@@ -135,24 +133,26 @@ enum BlurryPhotoChecks {
             check(abs(BlurSensitivity.currentCutoff - cutoff) < epsilon,
                   "Property 11: writing cutoff \(cutoff) then reading currentCutoff round-trips")
         }
-        // A stored value <= 0 yields the default.
+        // A stored 0 is a VALID cutoff now (not "unset"), so it round-trips.
         UserDefaults.standard.set(0.0, forKey: BlurSensitivity.storageKey)
-        check(BlurSensitivity.currentCutoff == BlurSensitivity.defaultCutoff,
-              "Property 11: stored 0 yields defaultCutoff")
-        UserDefaults.standard.set(-12.5, forKey: BlurSensitivity.storageKey)
-        check(BlurSensitivity.currentCutoff == BlurSensitivity.defaultCutoff,
-              "Property 11: stored negative yields defaultCutoff")
+        check(BlurSensitivity.currentCutoff == 0.0,
+              "Property 11: stored 0 is a valid cutoff and round-trips")
+        // A negative in-range value round-trips.
+        UserDefaults.standard.set(-0.4, forKey: BlurSensitivity.storageKey)
+        check(abs(BlurSensitivity.currentCutoff - (-0.4)) < epsilon,
+              "Property 11: stored negative in-range value round-trips")
         // A missing value yields the default.
         UserDefaults.standard.removeObject(forKey: BlurSensitivity.storageKey)
         check(BlurSensitivity.currentCutoff == BlurSensitivity.defaultCutoff,
               "Property 11: missing stored value yields defaultCutoff")
-        // An out-of-range stored value is clamped.
+        // Out-of-range stored values (including stale values from the old
+        // variance metric) are clamped into range.
         UserDefaults.standard.set(BlurSensitivity.maxCutoff + 25, forKey: BlurSensitivity.storageKey)
         check(BlurSensitivity.currentCutoff == BlurSensitivity.maxCutoff,
               "Property 11: above-range stored value clamps to maxCutoff")
-        UserDefaults.standard.set(BlurSensitivity.minCutoff / 2, forKey: BlurSensitivity.storageKey)
+        UserDefaults.standard.set(BlurSensitivity.minCutoff - 25, forKey: BlurSensitivity.storageKey)
         check(BlurSensitivity.currentCutoff == BlurSensitivity.minCutoff,
-              "Property 11: positive below-range stored value clamps to minCutoff")
+              "Property 11: below-range stored value clamps to minCutoff")
         UserDefaults.standard.removeObject(forKey: BlurSensitivity.storageKey)
 
         // MARK: - Property 6: Toggling selection twice is the identity
