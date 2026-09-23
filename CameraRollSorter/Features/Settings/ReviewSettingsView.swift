@@ -14,22 +14,7 @@ struct ReviewSettingsView: View {
             Form {
                 // MARK: Global — applies to every cleanup feature.
                 Section {
-                    LabeledContent("Buffer ahead", value: "\(initialGroupTarget)")
-                    Slider(
-                        value: Binding(
-                            get: { Double(initialGroupTarget) },
-                            set: { initialGroupTarget = Int($0) }
-                        ),
-                        in: 100...2000, step: 100
-                    )
-                    .accessibilityLabel("Results to keep scanned ahead of your position before pausing")
-                    .accessibilityValue("\(initialGroupTarget)")
-                    Text("Each scan pauses once it has this many results below your current position, so the app stays responsive; scrolling loads more. Applies to Similar photos (groups), Live → Still, and Low-aesthetic (photos). Default 200.")
-                        .foregroundStyle(.secondary)
-                } header: {
-                    Text("Scan buffer")
-                }
-                Section {
+                    // Initial scan (home-screen preview cap).
                     LabeledContent("Initial scan", value: "\(previewTarget)")
                     Slider(
                         value: Binding(
@@ -42,10 +27,21 @@ struct ReviewSettingsView: View {
                     .accessibilityValue("\(previewTarget)")
                     Text("On the home screen, each feature scans only up to this many results before pausing, so opening the app doesn't run all three scans to completion at once. Opening a feature's list scans the rest up to the buffer above. Default 50.")
                         .foregroundStyle(.secondary)
-                } header: {
-                    Text("Initial scan")
-                }
-                Section {
+
+                    // Scan buffer (full, kept while a list is open).
+                    LabeledContent("Scan buffer", value: "\(initialGroupTarget)")
+                    Slider(
+                        value: Binding(
+                            get: { Double(initialGroupTarget) },
+                            set: { initialGroupTarget = Int($0) }
+                        ),
+                        in: 100...2000, step: 100
+                    )
+                    .accessibilityLabel("Results to keep scanned ahead of your position before pausing")
+                    .accessibilityValue("\(initialGroupTarget)")
+                    Text("Each scan pauses once it has this many results below your current position, so the app stays responsive; scrolling loads more. Applies to Similar photos (groups), Live → Still, and Low-aesthetic (photos). Default 200.")
+                        .foregroundStyle(.secondary)
+
                     Text("Scan direction and start date are set at the top of each list, so you can adjust them while reviewing.")
                     Text("With limited access, only the photos you allow can be scanned. Scores use Vision and local previews without automatic iCloud downloads.")
                         .foregroundStyle(.secondary)

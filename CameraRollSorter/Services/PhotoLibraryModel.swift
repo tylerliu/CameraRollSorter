@@ -10,9 +10,9 @@ enum PhotoLibraryDeletionError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .writeAccessRequired:
-            return "Photo access does not allow changes. Grant full or limited read-write access and try again."
+            return String(localized: "Photo access does not allow changes. Grant full or limited read-write access and try again.")
         case .changeRejected:
-            return "Photos did not accept the deletion request."
+            return String(localized: "Photos did not accept the deletion request.")
         }
     }
 }

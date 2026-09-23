@@ -10,11 +10,11 @@ enum LiveToStillError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .writeAccessRequired:
-            return "Photo access does not allow changes. Grant full or limited read-write access and try again."
+            return String(localized: "Photo access does not allow changes. Grant full or limited read-write access and try again.")
         case .stillDataUnavailable:
-            return "Couldn’t read the still image for this Live Photo locally."
+            return String(localized: "Couldn’t read the still image for this Live Photo locally.")
         case .changeRejected:
-            return "Photos did not accept the change request."
+            return String(localized: "Photos did not accept the change request.")
         }
     }
 }

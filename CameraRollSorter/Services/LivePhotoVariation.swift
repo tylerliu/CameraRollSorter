@@ -18,12 +18,14 @@ enum LivePhotoVariation: Sendable {
     var badgeText: String? {
         switch self {
         case .none: return nil
-        case .live: return "LIVE"
-        case .loop: return "LOOP"
-        case .bounce: return "BOUNCE"
-        case .longExposure: return "LONG EXPOSURE"
+        case .live: return String(localized: "LIVE", comment: "Live Photo badge")
+        case .loop: return String(localized: "LOOP", comment: "Loop Live Photo badge")
+        case .bounce: return String(localized: "BOUNCE", comment: "Bounce Live Photo badge")
+        case .longExposure: return String(localized: "LONG EXPOSURE", comment: "Long Exposure Live Photo badge")
         }
     }
+
+
 
     /// True for the two kinds this app can convert to a plain still: a genuine
     /// Live Photo and a Long Exposure. Loop and Bounce are excluded.

@@ -57,9 +57,9 @@ struct PhotoSelectionGrid<ActionBar: View>: View {
     let libraryDateRange: ClosedRange<Date>?
 
     // MARK: Presentation
-    let navigationTitle: String
+    let navigationTitle: LocalizedStringKey
     /// Text shown in the scanning-with-no-items placeholder.
-    let scanningText: String
+    let scanningText: LocalizedStringKey
     /// The empty state shown when a scan completed with no results.
     let emptyState: AnyView
     /// When true, the full-screen detail view shows a strip of each photo's

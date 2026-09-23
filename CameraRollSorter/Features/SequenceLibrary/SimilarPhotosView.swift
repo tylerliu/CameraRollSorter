@@ -30,9 +30,7 @@ struct SimilarPhotosView: View {
     /// "12 groups" once fully scanned, or "12 groups & more" while photos
     /// remain to be scanned.
     private var countLabel: String {
-        let n = library.groups.count
-        let unit = n == 1 ? "group" : "groups"
-        return library.hasMoreToScan ? "\(n) \(unit) & more" : "\(n) \(unit)"
+        CleanupHomeView.groupCountLabel(library.groups.count, more: library.hasMoreToScan)
     }
 
     /// Pinned scan controls, bound to this list's own window state on the model.

@@ -101,14 +101,12 @@ struct CleanupHomeView: View {
             return .progress("")
         }
         if !liveToStill.hasScanned && liveToStill.items.isEmpty {
-            return .text("Tap to scan")
+            return .text(String(localized: "Tap to scan"))
         }
         if liveToStill.hasScanned && liveToStill.items.isEmpty && !liveToStill.hasMoreToScan {
-            return .text("None found")
+            return .text(String(localized: "None found"))
         }
-        let unit = liveToStill.items.count == 1 ? "photo" : "photos"
-        let suffix = liveToStill.hasMoreToScan ? " & more" : ""
-        return .text("\(liveToStill.items.count) \(unit)\(suffix)")
+        return .text(Self.photoCountLabel(liveToStill.items.count, more: liveToStill.hasMoreToScan))
     }
 
     /// Subtitle for the Low-aesthetic row: scan progress or a live count with
@@ -118,14 +116,12 @@ struct CleanupHomeView: View {
             return .progress("")
         }
         if !blurry.hasScanned && blurry.items.isEmpty {
-            return .text("Tap to scan")
+            return .text(String(localized: "Tap to scan"))
         }
         if blurry.hasScanned && blurry.items.isEmpty && !blurry.hasMoreToScan {
-            return .text("None found")
+            return .text(String(localized: "None found"))
         }
-        let unit = blurry.items.count == 1 ? "photo" : "photos"
-        let suffix = blurry.hasMoreToScan ? " & more" : ""
-        return .text("\(blurry.items.count) \(unit)\(suffix)")
+        return .text(Self.photoCountLabel(blurry.items.count, more: blurry.hasMoreToScan))
     }
 
     /// Subtitle for the Similar photos row: scan progress or a result summary.
@@ -133,14 +129,26 @@ struct CleanupHomeView: View {
         // Before any scan: prompt to scan. Otherwise a live count with "& more"
         // while photos remain — no "X of N" progress, meaningless for partial.
         if !library.isScanning && !library.hasScanned && library.groups.isEmpty {
-            return .text("Tap to scan")
+            return .text(String(localized: "Tap to scan"))
         }
         if library.hasScanned && library.groups.isEmpty && !library.hasMoreToScan {
-            return .text("No groups found")
+            return .text(String(localized: "No groups found"))
         }
-        let unit = library.groups.count == 1 ? "group" : "groups"
-        let suffix = library.hasMoreToScan ? " & more" : ""
-        return .text("\(library.groups.count) \(unit)\(suffix)")
+        return .text(Self.groupCountLabel(library.groups.count, more: library.hasMoreToScan))
+    }
+
+    /// "N groups" (plural-aware) with an optional " & more" suffix, all
+    /// localizable. The count and the suffix are separate catalog keys so
+    /// languages can reorder/omit — English concatenation would not translate.
+    static func groupCountLabel(_ count: Int, more: Bool) -> String {
+        let base = String(localized: "\(count) groups")
+        return more ? String(localized: "\(base) & more") : base
+    }
+
+    /// "N photos" (plural-aware) with an optional " & more" suffix.
+    static func photoCountLabel(_ count: Int, more: Bool) -> String {
+        let base = String(localized: "\(count) photos")
+        return more ? String(localized: "\(base) & more") : base
     }
 
     private var accessSection: some View {
@@ -194,7 +202,7 @@ struct CategoryRow: View {
         case text(String)
     }
 
-    let title: String
+    let title: LocalizedStringKey
     let systemImage: String
     let detail: Detail
 

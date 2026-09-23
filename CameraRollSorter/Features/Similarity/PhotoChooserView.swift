@@ -283,7 +283,10 @@ struct PhotoChooserView: View {
                 dismiss()
             } catch {
                 isDeleting = false
-                deletionError = error.localizedDescription
+                // Tapping Cancel on the system delete prompt isn't an error.
+                if !PhotoLibraryErrors.isUserCancelled(error) {
+                    deletionError = error.localizedDescription
+                }
             }
         }
     }

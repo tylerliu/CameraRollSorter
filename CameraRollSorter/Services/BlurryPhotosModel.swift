@@ -23,9 +23,9 @@ enum BlurryPhotosError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .writeAccessRequired:
-            return "Photo access does not allow changes. Grant full or limited read-write access and try again."
+            return String(localized: "Photo access does not allow changes. Grant full or limited read-write access and try again.")
         case .changeRejected:
-            return "Photos did not accept the deletion request."
+            return String(localized: "Photos did not accept the deletion request.")
         }
     }
 }
@@ -374,7 +374,10 @@ final class BlurryPhotosModel: NSObject, PHPhotoLibraryChangeObserver {
                 }
             }
         } catch {
-            errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            // Cancelling the system delete prompt isn't an error to surface.
+            if !PhotoLibraryErrors.isUserCancelled(error) {
+                errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            }
             throw error
         }
 

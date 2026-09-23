@@ -65,7 +65,7 @@ struct BlurryPhotosView: View {
             Divider()
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("\(model.items.count) low-aesthetic \(model.items.count == 1 ? "photo" : "photos")")
+                    Text("\(model.items.count) low-aesthetic photos")
                         .font(.subheadline.weight(.semibold))
                     Text(selectionHint(isSelecting: isSelecting))
                         .font(.caption).foregroundStyle(.secondary)
@@ -90,8 +90,10 @@ struct BlurryPhotosView: View {
     }
 
     private func selectionHint(isSelecting: Bool) -> String {
-        if !selection.isEmpty { return "\(selection.count) selected" }
-        return isSelecting ? "Tap or drag to select" : "Tap Select to choose photos"
+        if !selection.isEmpty { return String(localized: "\(selection.count) selected") }
+        return isSelecting
+            ? String(localized: "Tap or drag to select")
+            : String(localized: "Tap Select to choose photos")
     }
 
     private var deletionAlertBinding: Binding<Bool> {
@@ -107,7 +109,10 @@ struct BlurryPhotosView: View {
                 _ = try await model.deletePhotos(ids)
                 selection.removeAll()
             } catch {
-                deletionError = error.localizedDescription
+                // Tapping Cancel on the system delete prompt isn't an error.
+                if !PhotoLibraryErrors.isUserCancelled(error) {
+                    deletionError = error.localizedDescription
+                }
             }
             isDeleting = false
         }

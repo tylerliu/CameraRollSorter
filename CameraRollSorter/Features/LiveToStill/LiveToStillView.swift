@@ -94,8 +94,10 @@ struct LiveToStillView: View {
     }
 
     private func selectionHint(isSelecting: Bool) -> String {
-        if !selection.isEmpty { return "\(selection.count) selected" }
-        return isSelecting ? "Tap or drag to select" : "Tap Select to choose photos"
+        if !selection.isEmpty { return String(localized: "\(selection.count) selected") }
+        return isSelecting
+            ? String(localized: "Tap or drag to select")
+            : String(localized: "Tap Select to choose photos")
     }
 
     private var conversionAlertBinding: Binding<Bool> {
@@ -111,7 +113,10 @@ struct LiveToStillView: View {
                 _ = try await model.convertToStill(ids)
                 selection.removeAll()
             } catch {
-                conversionError = error.localizedDescription
+                // Tapping Cancel on the system delete prompt isn't an error.
+                if !PhotoLibraryErrors.isUserCancelled(error) {
+                    conversionError = error.localizedDescription
+                }
             }
             isConverting = false
         }
