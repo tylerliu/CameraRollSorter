@@ -66,29 +66,29 @@ private actor BlurryPhotoScanner {
         return result
     }
 
-    /// Classify a batch of candidate ids using Vision's image-aesthetics
-    /// request, returning only the LOW-aesthetic ones in candidate order: a
-    /// photo qualifies when Vision does NOT flag it as "utility" (screenshots,
+    /// Classify a batch of candidates using Vision's image-aesthetics request,
+    /// returning only the LOW-aesthetic ones in candidate order: a photo
+    /// qualifies when Vision does NOT flag it as "utility" (screenshots,
     /// receipts, documents) AND its overall aesthetics score is below `cutoff`.
-    /// Each id is scored inside its own `autoreleasepool` so decoded buffers are
-    /// released promptly across a large batch.
+    /// Each photo is scored inside its own `autoreleasepool` so decoded buffers
+    /// are released promptly across a large batch. The capture date is carried
+    /// through from the candidate (already fetched), so there's no extra
+    /// per-photo PhotoKit lookup.
     ///
-    /// Ids whose downscaled image can't be loaded locally, and any id Vision
+    /// Candidates whose downscaled image can't be loaded locally, and any Vision
     /// can't score (notably the Simulator, where the request throws), are
     /// dropped — the flow simply shows nothing for those rather than fabricating
     /// a score.
-    func lowAestheticItems(in ids: [String], cutoff: Double) -> [BlurryPhotoItem] {
+    func lowAestheticItems(in candidates: [TimedPhoto], cutoff: Double) -> [BlurryPhotoItem] {
         guard #available(iOS 18.0, *) else { return [] }
         var items: [BlurryPhotoItem] = []
-        for id in ids {
+        for candidate in candidates {
             autoreleasepool {
-                guard let cgImage = PhotoImageLoading.synchronousImage(for: id, targetSize: 512)?.cgImage else { return }
+                guard let cgImage = PhotoImageLoading.synchronousImage(for: candidate.id, targetSize: 512)?.cgImage else { return }
                 guard let score = try? AestheticsRequestRunner.score(for: cgImage) else { return }
                 // Non-utility only, and below the low-aesthetic cutoff.
                 guard !score.isUtility, Double(score.overall) < cutoff else { return }
-                guard let date = PHAsset.fetchAssets(withLocalIdentifiers: [id], options: nil)
-                    .firstObject?.creationDate else { return }
-                items.append(BlurryPhotoItem(id: id, date: date, score: Double(score.overall)))
+                items.append(BlurryPhotoItem(id: candidate.id, date: candidate.date, score: Double(score.overall)))
             }
         }
         return items
@@ -99,8 +99,8 @@ private actor BlurryPhotoScanner {
 /// `LiveToStillModel`: candidates are fetched fast (metadata only), ordered and
 /// windowed with `SequenceGrouping.scanOrdered`, then classified in buffered
 /// batches on `BlurryPhotoScanner` so a large library streams in rather than
-/// blocking. "Convertible Live Photo" classification is replaced by blur
-/// classification against the active variance cutoff.
+/// blocking. "Convertible Live Photo" classification is replaced by low-
+/// aesthetic classification against the active aesthetics-score cutoff.
 ///
 /// NOTE: `applySensitivity()`, `syncLibrary()`, `photoLibraryDidChange(_:)`, and
 /// `deletePhotos(_:)` are added by later tasks (4.3 / 4.4). This task (4.2)
@@ -130,8 +130,8 @@ final class BlurryPhotosModel: NSObject, PHPhotoLibraryChangeObserver {
     private var allCandidates: [TimedPhoto] = [] // full fetched candidate set (unwindowed)
     private var candidates: [TimedPhoto] = []    // ordered+windowed candidate photos
     private var classifiedCount = 0              // how far along `candidates` we've classified
-    // Fewer per batch than Live→Still: each item does an image decode +
-    // Laplacian convolution, so smaller batches keep the UI responsive.
+    // Fewer per batch than Live→Still: each item does an image decode + a
+    // Vision aesthetics request, so smaller batches keep the UI responsive.
     private let batchSize = 120                  // candidates classified per step
     // Furthest grid row the viewer reached; keep this many items classified
     // ahead of it.
@@ -235,14 +235,14 @@ final class BlurryPhotosModel: NSObject, PHPhotoLibraryChangeObserver {
 
             let start = classifiedCount
             let end = min(start + batchSize, candidates.count)
-            let batchIDs = candidates[start..<end].map(\.id)
-            let blurry = await scanner.lowAestheticItems(in: batchIDs, cutoff: activeCutoff)
+            let batch = Array(candidates[start..<end])
+            let blurry = await scanner.lowAestheticItems(in: batch, cutoff: activeCutoff)
             if Task.isCancelled { return }
             // Preserve window order: `lowAestheticItems` returns candidate-ordered
             // results, but append via lookup to keep the invariant explicit.
             let byID = Dictionary(blurry.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-            for id in batchIDs {
-                if let item = byID[id] { items.append(item) }
+            for candidate in batch {
+                if let item = byID[candidate.id] { items.append(item) }
             }
             classifiedCount = end
             await Task.yield()
@@ -281,18 +281,19 @@ final class BlurryPhotosModel: NSObject, PHPhotoLibraryChangeObserver {
     /// when the cutoff is unchanged, so it's cheap to call on every settings
     /// dismiss (Requirement 7.4).
     ///
-    /// The re-check is ASYMMETRIC, exploiting that the blur decision is
-    /// monotonic in the cutoff (blurry when variance < cutoff):
-    /// - LOWERING the cutoff (less sensitive): the new blurry set is a SUBSET of
+    /// The re-check is ASYMMETRIC, exploiting that the low-aesthetic decision is
+    /// monotonic in the cutoff (flagged when score < cutoff):
+    /// - LOWERING the cutoff (less sensitive): the new flagged set is a SUBSET of
     ///   the current one. Every photo that still qualifies was already flagged
-    ///   and carries its stored `variance`, so we simply re-filter `items` in
-    ///   place — no re-scan, no classifier work, and scroll position is kept
-    ///   because we only remove rows. `classifiedCount`/`candidates` are left
-    ///   untouched: we've merely tightened the filter over the same classified
-    ///   prefix, and any later batches classified via `classifyBatches` will use
-    ///   the new (lower) `activeCutoff` too, so results stay consistent.
+    ///   and carries its stored aesthetics `score`, so we simply re-filter
+    ///   `items` in place — no re-scan, no classifier work, and scroll position
+    ///   is kept because we only remove rows. `classifiedCount`/`candidates` are
+    ///   left untouched: we've merely tightened the filter over the same
+    ///   classified prefix, and any later batches classified via
+    ///   `classifyBatches` will use the new (lower) `activeCutoff` too, so
+    ///   results stay consistent.
     /// - RAISING the cutoff (more sensitive): photos that previously passed can
-    ///   now qualify, but their variances were never retained, so a full re-scan
+    ///   now qualify, but their scores were never retained, so a full re-scan
     ///   over the same candidate window from the front is required.
     func applySensitivity() {
         let newCutoff = BlurSensitivity.currentCutoff
@@ -300,11 +301,11 @@ final class BlurryPhotosModel: NSObject, PHPhotoLibraryChangeObserver {
         let loweringCutoff = newCutoff < activeCutoff
         activeCutoff = newCutoff
         if loweringCutoff {
-            // LESS sensitive: the new blurry set is a SUBSET of the current
-            // results. Every newly-blurry photo was already flagged, so just
-            // re-filter the current items in place by their stored variance —
-            // no re-scan, no classifier work. This also keeps scroll position
-            // (we only remove rows).
+            // LESS sensitive: the new flagged set is a SUBSET of the current
+            // results. Every still-flagged photo was already flagged, so just
+            // re-filter the current items in place by their stored aesthetics
+            // score — no re-scan, no classifier work. This also keeps scroll
+            // position (we only remove rows).
             scanTask?.cancel()
             items = items.filter { BlurSensitivity.isBlurry(variance: $0.score, cutoff: newCutoff) }
             // Note: classifiedCount/candidates are unchanged — we've merely
@@ -313,8 +314,8 @@ final class BlurryPhotosModel: NSObject, PHPhotoLibraryChangeObserver {
             isScanning = false
         } else {
             // MORE sensitive: photos that previously passed can now qualify, and
-            // their variances were never retained, so a full re-scan over the
-            // same candidate window from the front is required.
+            // their aesthetics scores were never retained, so a full re-scan over
+            // the same candidate window from the front is required.
             scanTask?.cancel()
             items = []
             classifiedCount = 0
@@ -435,7 +436,7 @@ final class BlurryPhotosModel: NSObject, PHPhotoLibraryChangeObserver {
         // Classify any added candidates that fall within the frontier and insert
         // them in window order. Added photos beyond the frontier stay in the
         // unclassified tail for scanMore.
-        let addedInside = added.isEmpty ? [] : candidates.prefix(classifiedCount).map(\.id).filter { added.contains($0) }
+        let addedInside = added.isEmpty ? [] : candidates.prefix(classifiedCount).filter { added.contains($0.id) }
         if !addedInside.isEmpty {
             let newItems = await scanner.lowAestheticItems(in: addedInside, cutoff: activeCutoff)
             let blurryAdded = Set(newItems.map(\.id))
