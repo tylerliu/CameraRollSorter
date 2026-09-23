@@ -27,10 +27,9 @@ struct SimilarPhotosView: View {
         library.scrollAnchorID = library.groups[top].id
     }
 
-    /// "12 groups" once fully scanned, or "12 groups & more" while photos
-    /// remain to be scanned.
+    /// The current number of groups, updated as the scan progresses.
     private var countLabel: String {
-        CleanupHomeView.groupCountLabel(library.groups.count, more: library.hasMoreToScan)
+        CleanupHomeView.groupCountLabel(library.groups.count)
     }
 
     /// Pinned scan controls, bound to this list's own window state on the model.
@@ -64,10 +63,17 @@ struct SimilarPhotosView: View {
             }
             Section {
                 // Count is shown as soon as scanning starts — no "X of N"
-                // progress, which is meaningless for a partial scan. "0 groups
-                // & more" is the honest starting state.
+                // progress, which is meaningless for a partial scan.
                 if library.isScanning || library.hasScanned || !library.groups.isEmpty {
-                    Text(countLabel).font(.caption).foregroundStyle(.secondary)
+                    HStack(spacing: 6) {
+                        Text(countLabel)
+                        if library.hasMoreToScan {
+                            Text("&")
+                            ProgressView()
+                        }
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 }
                 if library.hasScanned || !library.groups.isEmpty {
                     if library.hasScanned && library.groups.isEmpty && !library.isScanning {

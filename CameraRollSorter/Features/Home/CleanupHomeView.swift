@@ -95,7 +95,7 @@ struct CleanupHomeView: View {
     }
 
     /// Subtitle for the Live → Still row: scan progress or a live count with
-    /// "& more" while classification is still in progress.
+    /// an inline spinner while classification is still in progress.
     private var liveToStillDetail: CategoryRow.Detail {
         if liveToStill.isScanning && liveToStill.items.isEmpty {
             return .progress("")
@@ -106,11 +106,12 @@ struct CleanupHomeView: View {
         if liveToStill.hasScanned && liveToStill.items.isEmpty && !liveToStill.hasMoreToScan {
             return .text(String(localized: "None found"))
         }
-        return .text(Self.photoCountLabel(liveToStill.items.count, more: liveToStill.hasMoreToScan))
+        let count = Self.photoCountLabel(liveToStill.items.count)
+        return liveToStill.hasMoreToScan ? .scanning(count) : .text(count)
     }
 
     /// Subtitle for the Low-aesthetic row: scan progress or a live count with
-    /// "& more" while classification is still in progress.
+    /// an inline spinner while classification is still in progress.
     private var blurryDetail: CategoryRow.Detail {
         if blurry.isScanning && blurry.items.isEmpty {
             return .progress("")
@@ -121,34 +122,32 @@ struct CleanupHomeView: View {
         if blurry.hasScanned && blurry.items.isEmpty && !blurry.hasMoreToScan {
             return .text(String(localized: "None found"))
         }
-        return .text(Self.photoCountLabel(blurry.items.count, more: blurry.hasMoreToScan))
+        let count = Self.photoCountLabel(blurry.items.count)
+        return blurry.hasMoreToScan ? .scanning(count) : .text(count)
     }
 
     /// Subtitle for the Similar photos row: scan progress or a result summary.
     private var similarDetail: CategoryRow.Detail {
-        // Before any scan: prompt to scan. Otherwise a live count with "& more"
-        // while photos remain — no "X of N" progress, meaningless for partial.
+        // Before any scan: prompt to scan. Otherwise a live count with an inline
+        // spinner while photos remain — no "X of N" progress for a partial scan.
         if !library.isScanning && !library.hasScanned && library.groups.isEmpty {
             return .text(String(localized: "Tap to scan"))
         }
         if library.hasScanned && library.groups.isEmpty && !library.hasMoreToScan {
             return .text(String(localized: "No groups found"))
         }
-        return .text(Self.groupCountLabel(library.groups.count, more: library.hasMoreToScan))
+        let count = Self.groupCountLabel(library.groups.count)
+        return library.hasMoreToScan ? .scanning(count) : .text(count)
     }
 
-    /// "N groups" (plural-aware) with an optional " & more" suffix, all
-    /// localizable. The count and the suffix are separate catalog keys so
-    /// languages can reorder/omit — English concatenation would not translate.
-    static func groupCountLabel(_ count: Int, more: Bool) -> String {
-        let base = String(localized: "\(count) groups")
-        return more ? String(localized: "\(base) & more") : base
+    /// "N groups", plural-aware and localizable.
+    static func groupCountLabel(_ count: Int) -> String {
+        String(localized: "\(count) groups")
     }
 
-    /// "N photos" (plural-aware) with an optional " & more" suffix.
-    static func photoCountLabel(_ count: Int, more: Bool) -> String {
-        let base = String(localized: "\(count) photos")
-        return more ? String(localized: "\(base) & more") : base
+    /// "N photos", plural-aware and localizable.
+    static func photoCountLabel(_ count: Int) -> String {
+        String(localized: "\(count) photos")
     }
 
     private var accessSection: some View {
@@ -199,6 +198,7 @@ struct CleanupHomeView: View {
 struct CategoryRow: View {
     enum Detail {
         case progress(String)
+        case scanning(String)
         case text(String)
     }
 
@@ -227,6 +227,12 @@ struct CategoryRow: View {
             HStack(spacing: 6) {
                 ProgressView()
                 if !text.isEmpty { Text(text) }
+            }
+        case let .scanning(text):
+            HStack(spacing: 6) {
+                Text(text)
+                Text("&")
+                ProgressView()
             }
         case let .text(text):
             Text(text)
