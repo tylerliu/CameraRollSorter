@@ -50,6 +50,17 @@ struct PhotoChooserView: View {
         .safeAreaInset(edge: .bottom) { actionBar }
         .navigationTitle("Choose photos")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                // One tap flips the whole group: if nothing's marked yet, mark
+                // all for deletion; otherwise reset to keep everything.
+                if markedForDeletion.isEmpty {
+                    Button("Mark All") { keptIDs.removeAll() }
+                } else {
+                    Button("Keep All") { keptIDs = allIDs }
+                }
+            }
+        }
         .alert("Couldn’t move photos", isPresented: deletionAlertBinding) {
             Button("OK", role: .cancel) { deletionError = nil }
         } message: {
