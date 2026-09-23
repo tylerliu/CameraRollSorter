@@ -167,11 +167,12 @@ struct PhotoSelectionGrid<ActionBar: View>: View {
         Binding(get: { selection }, set: { if let new = $0 { selection = new } })
     }
 
-    /// Save the topmost visible cell as the scroll anchor on the host.
+    /// Save the topmost visible cell as the scroll anchor on the host. Indexes
+    /// directly (no per-event allocation of the full id array), matching the
+    /// scroll-tracking optimization used by SimilarPhotosView.
     private func updateAnchor() {
-        if let id = scrollTracker.topVisibleID(in: ids) {
-            scrollAnchorID = id
-        }
+        guard let top = scrollTracker.topVisibleIndexForAnchor, ids.indices.contains(top) else { return }
+        scrollAnchorID = ids[top]
     }
 
     private var grid: some View {

@@ -5,7 +5,7 @@ struct ReviewSettingsView: View {
     @AppStorage("review.geoGateEnabled") private var geoGateEnabled = true
     @AppStorage("review.geoGateKilometers") private var geoGateKilometers = 1.0
     @AppStorage("review.initialGroupTarget") private var initialGroupTarget = 200
-    @AppStorage(BlurSensitivity.storageKey) private var blurSensitivity = BlurSensitivity.medium.rawValue
+    @AppStorage(BlurSensitivity.storageKey) private var blurCutoff = BlurSensitivity.defaultCutoff
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -34,12 +34,11 @@ struct ReviewSettingsView: View {
                         .foregroundStyle(.secondary)
                 }
                 Section("Blurry photos") {
-                    Picker("Sensitivity", selection: $blurSensitivity) {
-                        Text("Low").tag(BlurSensitivity.low.rawValue)
-                        Text("Medium").tag(BlurSensitivity.medium.rawValue)
-                        Text("High").tag(BlurSensitivity.high.rawValue)
-                    }
-                    Text("Higher sensitivity flags more photos as blurry. Changes re-check your photos next time you open Blurry photos.")
+                    LabeledContent("Sensitivity", value: blurCutoff.formatted(.number.precision(.fractionLength(0))))
+                    Slider(value: $blurCutoff, in: BlurSensitivity.minCutoff...BlurSensitivity.maxCutoff, step: 1)
+                        .accessibilityLabel("Blur sensitivity")
+                        .accessibilityValue(blurCutoff.formatted(.number.precision(.fractionLength(0))))
+                    Text("Higher is more sensitive and flags more photos as blurry. Lowering re-checks your current results instantly; raising re-scans your photos next time you open Blurry photos.")
                         .foregroundStyle(.secondary)
                 }
                 Section("Location shortcut") {

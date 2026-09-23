@@ -42,3 +42,14 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcrun swiftc \
 ```
 
 Checks cover the strict one-day boundary, nearest-five selection in both time directions, old photos, quick-shot sequences, chronological display, deterministic ties, candidate limits, threshold boundaries, connected groups larger than five, rejected bridges, invalid scores, deterministic component ordering, minimum spanning trees, cycle removal, and duplicate-edge handling. Physical-device checks of real photo scores, permission changes, cloud-only photos, deletion permissions, Recently Deleted behavior, and full-library performance remain required. Review decisions are local to the chooser session and are not persisted.
+
+## Blurry photo checks
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcrun swiftc \
+  CameraRollSorter/Services/BlurSensitivity.swift CameraRollSorter/Features/Shared/PhotoSelectionLogic.swift Tests/BlurryPhotoChecks.swift \
+  -o /tmp/CameraRollSorter-blurry-checks
+/tmp/CameraRollSorter-blurry-checks
+```
+
+Property-based checks (200 randomized iterations each, seeded for reproducibility) for the pure logic behind the Blurry photos flow: the strict variance threshold decision, sensitivity cutoff monotonicity and totality, sensitivity persistence round-tripping through `UserDefaults`, selection toggle involution, Select All, paint-range selection over the swept index range, the paint-vs-scroll drag-axis decision, and the edge auto-scroll direction/intensity mapping. These cover the PhotoKit/Metal/SwiftUI-free surfaces (`BlurSensitivity`, `PhotoSelectionLogic`). The image-bound properties — Laplacian-variance blur scoring (`BlurClassifier`, Metal + vImage), the scan-scope predicate on `PHAsset` types, incremental scan/reconcile ordering, and post-delete state — require the app target and remain on-device/integration checks.

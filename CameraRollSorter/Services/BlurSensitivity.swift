@@ -1,38 +1,47 @@
 import Foundation
 
-/// The user-facing blur sensitivity setting and its mapping to a Laplacian-
-/// variance cutoff. Persisted in `UserDefaults` under a stable key, read by
-/// both the settings screen (`@AppStorage`) and `BlurryPhotosModel`.
+/// The user-facing blur sensitivity setting, expressed as a continuous,
+/// user-tunable Laplacian-variance cutoff. Persisted in `UserDefaults` under a
+/// stable key, read by both the settings screen (`@AppStorage`) and
+/// `BlurryPhotosModel`.
 ///
 /// A photo is classified blurry when its Laplacian variance is strictly below
-/// the active cutoff (see `isBlurry(variance:cutoff:)`). The cutoff is
-/// intentionally kept independent of PhotoKit so the decision can be exercised
-/// by pure property tests.
-enum BlurSensitivity: String, CaseIterable, Sendable {
-    case low, medium, high
-
-    /// Laplacian-variance cutoff. A photo is blurry when its variance < cutoff.
-    ///
-    /// MUST be monotonic non-decreasing across low → medium → high so a higher
-    /// sensitivity flags a superset of what a lower one flags (Property 10).
-    /// The ordering — not the exact numbers — is what the monotonicity property
-    /// depends on; the constants are tuned against sample photos.
-    var varianceCutoff: Double {
-        switch self {
-        case .low:    return 8.0
-        case .medium: return 18.0
-        case .high:   return 35.0
-        }
-    }
-
+/// the active cutoff (see `isBlurry(variance:cutoff:)`). The setting is now the
+/// cutoff value itself rather than a Low/Medium/High enum: a higher cutoff is
+/// MORE sensitive (flags a superset of photos), a lower cutoff is less
+/// sensitive (flags a subset).
+///
+/// Because the decision is monotonic in the cutoff, `BlurryPhotosModel`
+/// applies an asymmetric re-check when the cutoff changes: LOWERING the cutoff
+/// only tightens the already-classified set, so it re-filters current results
+/// in place by their stored variance (no re-scan); RAISING the cutoff can admit
+/// previously-passing photos whose variances were never retained, so it
+/// requires a full re-scan. See `BlurryPhotosModel.applySensitivity()`.
+///
+/// The cutoff is intentionally kept independent of PhotoKit so the decision can
+/// be exercised by pure property tests.
+enum BlurSensitivity {
     /// Stable `UserDefaults` / `@AppStorage` key for the persisted setting.
     static let storageKey = "blurry.sensitivity"
 
-    /// The currently persisted sensitivity, defaulting to `.medium` when unset
-    /// or when the stored value is not a recognized case.
-    static var current: BlurSensitivity {
-        UserDefaults.standard.string(forKey: storageKey)
-            .flatMap(BlurSensitivity.init) ?? .medium
+    /// Default cutoff used when nothing is stored yet. Matches the old
+    /// `.medium` mapping so existing behavior is preserved.
+    static let defaultCutoff: Double = 18.0
+
+    /// Slider lower bound: the LEAST sensitive setting (flags the fewest photos).
+    static let minCutoff: Double = 2.0
+
+    /// Slider upper bound: the MOST sensitive setting (flags the most photos).
+    static let maxCutoff: Double = 60.0
+
+    /// The currently persisted cutoff. `UserDefaults.double(forKey:)` returns 0
+    /// when the key is unset, so a stored value <= 0 (or absent) is treated as
+    /// `defaultCutoff`; any stored value is otherwise clamped into
+    /// `[minCutoff, maxCutoff]`.
+    static var currentCutoff: Double {
+        let stored = UserDefaults.standard.double(forKey: storageKey)
+        guard stored > 0 else { return defaultCutoff }
+        return min(max(stored, minCutoff), maxCutoff)
     }
 
     /// Pure blur decision: a photo is blurry exactly when its Laplacian

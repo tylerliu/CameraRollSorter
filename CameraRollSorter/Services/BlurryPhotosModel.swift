@@ -87,7 +87,7 @@ private actor BlurryPhotoScanner {
 /// windowed with `SequenceGrouping.scanOrdered`, then classified in buffered
 /// batches on `BlurryPhotoScanner` so a large library streams in rather than
 /// blocking. "Convertible Live Photo" classification is replaced by blur
-/// classification against the active sensitivity's variance cutoff.
+/// classification against the active variance cutoff.
 ///
 /// NOTE: `applySensitivity()`, `syncLibrary()`, `photoLibraryDidChange(_:)`, and
 /// `deletePhotos(_:)` are added by later tasks (4.3 / 4.4). This task (4.2)
@@ -126,9 +126,9 @@ final class BlurryPhotosModel: NSObject, PHPhotoLibraryChangeObserver {
     private let targetBufferAhead = 300
     private var lastScanDirection: ScanDirection = .older
     private var lastScanStartDate: Date?
-    // Sensitivity captured at scan start so a mid-scan settings change is
-    // handled by `applySensitivity()` (task 4.3) rather than racing the batches.
-    private var activeSensitivity: BlurSensitivity = .current
+    // Cutoff captured at scan start so a mid-scan settings change is handled by
+    // `applySensitivity()` rather than racing the batches.
+    private var activeCutoff: Double = BlurSensitivity.currentCutoff
 
     var canRead: Bool { authorization == .authorized || authorization == .limited }
 
@@ -182,9 +182,9 @@ final class BlurryPhotosModel: NSObject, PHPhotoLibraryChangeObserver {
         isScanning = true
         lastScanDirection = scanDirectionSetting
         lastScanStartDate = scanStartDateSetting
-        // Capture the sensitivity for this scan so a mid-scan settings change is
+        // Capture the cutoff for this scan so a mid-scan settings change is
         // reconciled by applySensitivity() rather than racing classifyBatches().
-        activeSensitivity = .current
+        activeCutoff = BlurSensitivity.currentCutoff
         scanTask = Task {
             // Fast metadata-only fetch of every candidate. Ordering and the
             // per-image blur classification are deferred so nothing blocks up front.
@@ -223,7 +223,7 @@ final class BlurryPhotosModel: NSObject, PHPhotoLibraryChangeObserver {
             let start = classifiedCount
             let end = min(start + batchSize, candidates.count)
             let batchIDs = candidates[start..<end].map(\.id)
-            let blurry = await scanner.blurryItems(in: batchIDs, cutoff: activeSensitivity.varianceCutoff)
+            let blurry = await scanner.blurryItems(in: batchIDs, cutoff: activeCutoff)
             if Task.isCancelled { return }
             // Preserve window order: `blurryItems` returns candidate-ordered
             // results, but append via lookup to keep the invariant explicit.
@@ -264,26 +264,53 @@ final class BlurryPhotosModel: NSObject, PHPhotoLibraryChangeObserver {
         }
     }
 
-    /// Called when the sensitivity setting changes. Because blur classification
-    /// is a pure function of `(image, cutoff)`, re-running the scan over the
-    /// SAME candidate window with the new cutoff yields the correctly
-    /// re-classified set (Requirement 7.4). No-ops when the sensitivity is
-    /// unchanged, so it's cheap to call on every settings dismiss.
+    /// Called when the sensitivity (variance cutoff) setting changes. No-ops
+    /// when the cutoff is unchanged, so it's cheap to call on every settings
+    /// dismiss (Requirement 7.4).
+    ///
+    /// The re-check is ASYMMETRIC, exploiting that the blur decision is
+    /// monotonic in the cutoff (blurry when variance < cutoff):
+    /// - LOWERING the cutoff (less sensitive): the new blurry set is a SUBSET of
+    ///   the current one. Every photo that still qualifies was already flagged
+    ///   and carries its stored `variance`, so we simply re-filter `items` in
+    ///   place — no re-scan, no classifier work, and scroll position is kept
+    ///   because we only remove rows. `classifiedCount`/`candidates` are left
+    ///   untouched: we've merely tightened the filter over the same classified
+    ///   prefix, and any later batches classified via `classifyBatches` will use
+    ///   the new (lower) `activeCutoff` too, so results stay consistent.
+    /// - RAISING the cutoff (more sensitive): photos that previously passed can
+    ///   now qualify, but their variances were never retained, so a full re-scan
+    ///   over the same candidate window from the front is required.
     func applySensitivity() {
-        let newSensitivity = BlurSensitivity.current
-        guard newSensitivity != activeSensitivity else { return }
-        activeSensitivity = newSensitivity
-
-        scanTask?.cancel()
-        // Rebuild from the front over the same candidate window; only the cutoff
-        // changed, so the windowed candidate list is still valid.
-        items = []
-        classifiedCount = 0
-        scanAheadOf = 0
-        isScanning = true
-        scanTask = Task {
-            await classifyBatches()
+        let newCutoff = BlurSensitivity.currentCutoff
+        guard newCutoff != activeCutoff else { return }
+        let loweringCutoff = newCutoff < activeCutoff
+        activeCutoff = newCutoff
+        if loweringCutoff {
+            // LESS sensitive: the new blurry set is a SUBSET of the current
+            // results. Every newly-blurry photo was already flagged, so just
+            // re-filter the current items in place by their stored variance —
+            // no re-scan, no classifier work. This also keeps scroll position
+            // (we only remove rows).
+            scanTask?.cancel()
+            items = items.filter { BlurSensitivity.isBlurry(variance: $0.variance, cutoff: newCutoff) }
+            // Note: classifiedCount/candidates are unchanged — we've merely
+            // tightened the filter over the SAME already-classified prefix. Do
+            // NOT reset them.
             isScanning = false
+        } else {
+            // MORE sensitive: photos that previously passed can now qualify, and
+            // their variances were never retained, so a full re-scan over the
+            // same candidate window from the front is required.
+            scanTask?.cancel()
+            items = []
+            classifiedCount = 0
+            scanAheadOf = 0
+            isScanning = true
+            scanTask = Task {
+                await classifyBatches()
+                isScanning = false
+            }
         }
     }
 
@@ -397,7 +424,7 @@ final class BlurryPhotosModel: NSObject, PHPhotoLibraryChangeObserver {
         // unclassified tail for scanMore.
         let addedInside = added.isEmpty ? [] : candidates.prefix(classifiedCount).map(\.id).filter { added.contains($0) }
         if !addedInside.isEmpty {
-            let newItems = await scanner.blurryItems(in: addedInside, cutoff: activeSensitivity.varianceCutoff)
+            let newItems = await scanner.blurryItems(in: addedInside, cutoff: activeCutoff)
             let blurryAdded = Set(newItems.map(\.id))
             // Rebuild `items` in window order over the classified prefix so the
             // new ones land in their correct position (not at the end).
