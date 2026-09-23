@@ -54,6 +54,8 @@ struct BlurryPhotosView: View {
             Text(deletionError ?? "Try again after checking photo access.")
         }
         .task { if !model.hasScanned { model.scan() } }
+        .onAppear { model.setListActive(true) }
+        .onDisappear { model.setListActive(false) }
     }
 
     // MARK: - Action bar

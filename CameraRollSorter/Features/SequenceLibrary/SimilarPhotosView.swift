@@ -121,7 +121,11 @@ struct SimilarPhotosView: View {
             }
         }
         .refreshable { library.refresh() }
-        .onAppear { scrollTracker.restore(library.scrollAnchorID, proxy: proxy) }
+        .onAppear {
+            scrollTracker.restore(library.scrollAnchorID, proxy: proxy)
+            library.setListActive(true)
+        }
+        .onDisappear { library.setListActive(false) }
         }
     }
 }

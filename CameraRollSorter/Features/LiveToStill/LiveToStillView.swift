@@ -60,6 +60,8 @@ struct LiveToStillView: View {
             Text("The still keeps the photo and its metadata. The Live Photo’s motion is removed and the original moves to Recently Deleted.")
         }
         .task { if !model.hasScanned { model.scan() } }
+        .onAppear { model.setListActive(true) }
+        .onDisappear { model.setListActive(false) }
     }
 
     private func actionBar(isSelecting: Bool) -> some View {

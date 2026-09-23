@@ -78,12 +78,10 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
     private let initialBatchSize = 256
     private let forwardBatchSize = 64
     private var batchSize: Int { hasScanned ? forwardBatchSize : initialBatchSize }
-    // Soft stop for the initial scan: pause once this many groups exist. User
-    // configurable in review settings (default 200).
-    private var targetGroupCount: Int {
-        let value = UserDefaults.standard.object(forKey: "review.initialGroupTarget") as? Int ?? 200
-        return max(1, value)
-    }
+    /// True while the Similar photos list is on screen. Off → the scan only
+    /// fills the small preview buffer (home screen); on → it fills the full
+    /// buffer. Set via `setListActive`.
+    private var listActive = false
     /// True while a batch is actively measuring (drives the bottom spinner).
     var isScanningBatch = false
     /// True when there are still unscanned photos in the current window.
@@ -187,12 +185,19 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
         isScanning = true
         let token = revision
         scanTask = Task {
-            // Scan until there are `targetGroupCount` groups beyond the viewed
-            // position, or the library is exhausted. Keeps the buffer ahead of
-            // the viewer so the "Scan more" fallback isn't needed when scrolling.
+            // Scan until there are enough groups beyond the viewed position, or
+            // the library is exhausted. Keeps the buffer ahead of the viewer.
             await runBatches()
             if revision == token { isScanning = false }
         }
+    }
+
+    /// Called when the Similar photos list appears/disappears. Opening the list
+    /// lifts the buffer from the small home-screen preview cap to the full one,
+    /// so scanning resumes to fill it; closing it just stops growing the buffer.
+    func setListActive(_ active: Bool) {
+        listActive = active
+        if active { scanMore() }
     }
 
     /// Measure successive `batchSize` slices of `sortedPhotos`, appending pairs
@@ -204,8 +209,9 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
         let token = revision
         while hasMoreToScan {
             if Task.isCancelled || revision != token { return }
-            // Enough buffer ahead of the current position → pause.
-            if groups.count - scanAheadOf >= targetGroupCount { break }
+            // Enough buffer ahead of the current position → pause. Uses the
+            // small preview cap until the list is open, then the full buffer.
+            if groups.count - scanAheadOf >= ScanBuffer.effectiveTarget(listActive: listActive) { break }
 
             // Next batch: the first `batchSize` still-unscanned photos in scan
             // order. Usually a contiguous front run, but after a direction flip
@@ -393,7 +399,7 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
 
         // Threshold / group-target change only: regroup, resume if below buffer.
         applyThreshold()
-        if hasMoreToScan, groups.count < targetGroupCount, !isScanning {
+        if hasMoreToScan, groups.count < ScanBuffer.effectiveTarget(listActive: listActive), !isScanning {
             isScanning = true
             let token = revision
             scanTask = Task {

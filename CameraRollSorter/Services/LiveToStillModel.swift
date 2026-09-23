@@ -51,12 +51,14 @@ final class LiveToStillModel: NSObject, PHPhotoLibraryChangeObserver {
     private var candidates: [TimedPhoto] = []    // ordered+windowed candidate Live Photos
     private var classifiedCount = 0              // how far along `candidates` we've classified
     private let batchSize = 200                 // candidates classified per step
-    // Furthest grid row the viewer reached; keep this many items classified
-    // ahead of it.
+    // Furthest grid row the viewer reached; the scan keeps `ScanBuffer.target`
+    // items classified ahead of it (a shared, settings-driven buffer).
     private var scanAheadOf = 0
-    private let targetBufferAhead = 400
     private var lastScanDirection: ScanDirection = .older
     private var lastScanStartDate: Date?
+    // True while the grid is on screen. Off → only the small preview buffer is
+    // filled (home screen); on → the full buffer. Set via `setListActive`.
+    private var listActive = false
 
     var canRead: Bool { authorization == .authorized || authorization == .limited }
 
@@ -137,14 +139,21 @@ final class LiveToStillModel: NSObject, PHPhotoLibraryChangeObserver {
         }
     }
 
+    /// Called when the grid appears/disappears. Opening it lifts the buffer from
+    /// the home-screen preview cap to the full one, resuming classification.
+    func setListActive(_ active: Bool) {
+        listActive = active
+        if active { scanMore() }
+    }
+
     /// Classify successive `batchSize` slices of `candidates`, appending the
     /// convertible ones to `items`. Stops when the candidate list is exhausted
-    /// or once there are `targetBufferAhead` items classified beyond the viewed
+    /// or once there are `ScanBuffer.target` items classified beyond the viewed
     /// position. Yields between batches so the UI stays responsive.
     private func classifyBatches() async {
         while hasMoreToScan {
             if Task.isCancelled { return }
-            if items.count - scanAheadOf >= targetBufferAhead { break }
+            if items.count - scanAheadOf >= ScanBuffer.effectiveTarget(listActive: listActive) { break }
 
             let start = classifiedCount
             let end = min(start + batchSize, candidates.count)

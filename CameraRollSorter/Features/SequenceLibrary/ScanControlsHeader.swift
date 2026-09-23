@@ -1,5 +1,42 @@
 import SwiftUI
 
+/// Global scan-buffer setting shared by ALL cleanup features. Each incremental
+/// scan pauses once it has this many results (groups / convertible photos /
+/// low-aesthetic photos) BELOW the viewer's current position, and resumes as
+/// the list scrolls. Backed by the single `review.initialGroupTarget` key so
+/// one slider in settings governs Similar photos, Live → Still, and
+/// Low-aesthetic alike.
+nonisolated enum ScanBuffer {
+    // Full buffer, kept while a feature's list is actively being viewed.
+    static let storageKey = "review.initialGroupTarget"
+    static let defaultTarget = 200
+    // Preview buffer, used while no list is open (the home screen). Keeps each
+    // scan from burning through its full buffer on all three features at launch;
+    // opening a list lifts the cap to the full `target`. Both are settable.
+    static let previewStorageKey = "review.previewTarget"
+    static let defaultPreviewTarget = 50
+
+    /// Full results to keep buffered ahead of the current position before
+    /// pausing, once the feature's list is actively being viewed.
+    static var target: Int {
+        let value = UserDefaults.standard.object(forKey: storageKey) as? Int ?? defaultTarget
+        return max(1, value)
+    }
+
+    /// Results to find on the home screen (per feature) before pausing, when no
+    /// list is open yet.
+    static var previewTarget: Int {
+        let value = UserDefaults.standard.object(forKey: previewStorageKey) as? Int ?? defaultPreviewTarget
+        return max(1, value)
+    }
+
+    /// Effective buffer for the current viewing state: the small `previewTarget`
+    /// until the list is open, then the full `target`.
+    static func effectiveTarget(listActive: Bool) -> Int {
+        listActive ? target : min(target, previewTarget)
+    }
+}
+
 /// Pinned scan-scope controls shared (as UI only) by the Similar photos list
 /// and the Live → Still grid: scan direction (New→Old / Old→New) and an
 /// optional "from date" window. State is NOT shared between the two screens —
