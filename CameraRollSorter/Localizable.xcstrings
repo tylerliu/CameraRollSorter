@@ -1041,13 +1041,13 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "实况转静止"
+            "value" : "实况 → 静止"
           }
         },
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "實況轉靜止"
+            "value" : "實況 → 靜止"
           }
         }
       }
