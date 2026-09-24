@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-check:
+    name: Build and check
+    runs-on: xcode-27
+    timeout-minutes: 20
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.0.0.app/Contents/Developer
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Show toolchain
+        run: xcodebuild -version
+
+      - name: Build app for iOS Simulator
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project CameraRollSorter.xcodeproj \
+            -scheme CameraRollSorter \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/CameraRollSorter-build" \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Run grouping checks
+        run: |
+          xcrun swiftc \
+            CameraRollSorter/Models/SequenceGrouping.swift \
+            CameraRollSorter/Models/SimilarityGrouping.swift \
+            Tests/main.swift \
+            -o "$RUNNER_TEMP/CameraRollSorter-grouping-checks"
+          "$RUNNER_TEMP/CameraRollSorter-grouping-checks"
+
+      - name: Run blurry photo checks
+        run: |
+          xcrun swiftc \
+            CameraRollSorter/Services/BlurSensitivity.swift \
+            CameraRollSorter/Features/Shared/PhotoSelectionLogic.swift \
+            Tests/BlurryPhotoChecks.swift \
+            -o "$RUNNER_TEMP/CameraRollSorter-blurry-checks"
+          "$RUNNER_TEMP/CameraRollSorter-blurry-checks"
