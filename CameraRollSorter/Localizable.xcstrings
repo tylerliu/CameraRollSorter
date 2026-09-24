@@ -1337,13 +1337,13 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "最新截止日期"
+            "value" : "截止日期"
           }
         },
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "最新截止日期"
+            "value" : "截止日期"
           }
         }
       }
@@ -1593,13 +1593,13 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "最早起始日期"
+            "value" : "起始日期"
           }
         },
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "最早起始日期"
+            "value" : "起始日期"
           }
         }
       }
