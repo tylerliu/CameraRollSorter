@@ -39,7 +39,9 @@ struct SimilarPhotosView: View {
             startEnabled: $library.scanStartEnabled,
             startInterval: $library.scanStartInterval,
             dateRange: library.libraryDateRange,
-            onChange: { library.applySettings() }
+            onChange: { library.applySettings() },
+            onSettle: { library.scheduleWindowCleanup() },
+            onCancelCleanup: { library.cancelWindowCleanup() }
         )
     }
 
@@ -70,6 +72,7 @@ struct SimilarPhotosView: View {
                         if library.hasMoreToScan {
                             Text("&")
                             ProgressView()
+                                .controlSize(.small)
                         }
                     }
                     .font(.caption)

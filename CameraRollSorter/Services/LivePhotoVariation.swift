@@ -10,6 +10,8 @@ import Photos
 enum LivePhotoVariation: Sendable {
     case none          // not a Live Photo
     case live          // genuine Live Photo (motion + audio)
+    case liveOff       // Live Photo whose Live was turned off in the editor:
+                       // still a .photoLive asset, but playbackStyle == .image
     case loop
     case bounce
     case longExposure
@@ -19,24 +21,47 @@ enum LivePhotoVariation: Sendable {
         switch self {
         case .none: return nil
         case .live: return String(localized: "LIVE", comment: "Live Photo badge")
+        case .liveOff: return String(localized: "LIVE OFF", comment: "Badge for a Live Photo whose Live is turned off")
         case .loop: return String(localized: "LOOP", comment: "Loop Live Photo badge")
         case .bounce: return String(localized: "BOUNCE", comment: "Bounce Live Photo badge")
         case .longExposure: return String(localized: "LONG EXPOSURE", comment: "Long Exposure Live Photo badge")
         }
     }
 
-
-
-    /// True for the two kinds this app can convert to a plain still: a genuine
-    /// Live Photo and a Long Exposure. Loop and Bounce are excluded.
-    var isConvertibleToStill: Bool {
+    /// True when the asset plays as a Live Photo (so the detail view should
+    /// offer press-and-hold playback). A Live-off asset has playback suppressed,
+    /// so it's excluded.
+    var hasPlayableMotion: Bool {
         self == .live || self == .longExposure
     }
 
-    /// Classify an asset. Only assets flagged `.photoLive` can be anything other
-    /// than `.none`.
+    /// True for the kinds this app can convert to a plain still: a genuine Live
+    /// Photo, a Long Exposure, and a Live Photo with Live already turned off.
+    /// Loop and Bounce are excluded.
+    var isConvertibleToStill: Bool {
+        self == .live || self == .longExposure || self == .liveOff
+    }
+
+    /// Classify an asset.
+    ///
+    /// A genuine Live Photo (playing) carries the `.photoLive` media subtype and
+    /// is classified by its `playbackVariation` / `playbackStyle`.
+    ///
+    /// A Live Photo whose Live was turned off in the editor is trickier: Photos
+    /// strips the `.photoLive` subtype AND resets `playbackStyle` to `.image`,
+    /// so it's indistinguishable from a plain still by metadata alone. The one
+    /// surviving signal is the paired video resource (`.pairedVideo` /
+    /// `.fullSizePairedVideo`) — a plain still never has one. We use that to
+    /// recognize `.liveOff`. (Verified on-device: a Live-off photo reports
+    /// resourceTypes [.photo, .pairedVideo] with no `.photoLive` subtype and
+    /// `hasAdjustments == false`.)
     static func of(_ asset: PHAsset) -> LivePhotoVariation {
-        guard asset.mediaSubtypes.contains(.photoLive) else { return .none }
+        guard asset.mediaSubtypes.contains(.photoLive) else {
+            // No subtype: either a plain still, or a Live Photo with Live turned
+            // off. The paired video resource is the only thing that tells them
+            // apart.
+            return hasPairedVideoResource(asset) ? .liveOff : .none
+        }
 
         // Undocumented Photos value: 0 = None (plain Live), 1 = Loop,
         // 2 = Bounce, 3 = Long Exposure. `as? Int` yields nil if the value is
@@ -46,7 +71,7 @@ enum LivePhotoVariation: Sendable {
             case 1: return .loop
             case 2: return .bounce
             case 3: return .longExposure
-            case 0: return .live
+            case 0: break          // plain Live — fall through to playbackStyle
             default: break
             }
         }
@@ -58,6 +83,17 @@ enum LivePhotoVariation: Sendable {
         case .livePhoto: return .live
         case .imageAnimated: return .loop   // loop or bounce; label generically
         default: return .live
+        }
+    }
+
+    /// True when the asset carries a Live Photo's paired video resource. This is
+    /// the only reliable signal for a Live Photo whose Live was turned off in
+    /// the editor: it loses the `.photoLive` subtype and reports
+    /// `playbackStyle == .image`, but the paired video stays attached.
+    private static func hasPairedVideoResource(_ asset: PHAsset) -> Bool {
+        guard asset.mediaType == .image else { return false }
+        return PHAssetResource.assetResources(for: asset).contains {
+            $0.type == .pairedVideo || $0.type == .fullSizePairedVideo
         }
     }
 }

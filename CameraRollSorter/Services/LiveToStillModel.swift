@@ -54,7 +54,7 @@ final class LiveToStillModel: NSObject, PHPhotoLibraryChangeObserver {
     // Furthest grid row the viewer reached; the scan keeps `ScanBuffer.target`
     // items classified ahead of it (a shared, settings-driven buffer).
     private var scanAheadOf = 0
-    private var lastScanDirection: ScanDirection = .older
+    private var lastScanDirection: ScanDirection = .newer
     private var lastScanStartDate: Date?
     // True while the grid is on screen. Off → only the small preview buffer is
     // filled (home screen); on → the full buffer. Set via `setListActive`.
@@ -74,10 +74,21 @@ final class LiveToStillModel: NSObject, PHPhotoLibraryChangeObserver {
     }
 
     // Per-view scan-window state, bound to the pinned ScanControlsHeader. NOT
-    // shared with the Similar photos screen — each list has its own window.
-    var scanDirectionRaw = "older"
-    var scanStartEnabled = false
-    var scanStartInterval = 0.0
+    // shared with the other cleanup screens — each list has its own window,
+    // persisted under its own key prefix so it survives app relaunch.
+    private let windowStore = ScanWindowStore(prefix: "liveToStill")
+    var scanDirectionRaw = "newer" { didSet { windowStore.direction = scanDirectionRaw } }
+    var scanStartEnabled = false { didSet { windowStore.startEnabled = scanStartEnabled } }
+    var scanStartInterval = 0.0 { didSet { windowStore.startInterval = scanStartInterval } }
+
+    override init() {
+        super.init()
+        // Restore the persisted scan window. These assignments re-write the same
+        // values back through didSet, which is an idempotent no-op.
+        scanDirectionRaw = windowStore.direction
+        scanStartEnabled = windowStore.startEnabled
+        scanStartInterval = windowStore.startInterval
+    }
 
     private var scanDirectionSetting: ScanDirection {
         ScanDirection(rawValue: scanDirectionRaw) ?? .older
@@ -163,8 +174,12 @@ final class LiveToStillModel: NSObject, PHPhotoLibraryChangeObserver {
             // Preserve window order: `convertibleItems` returns them keyed, we
             // append in candidate order.
             let byID = Dictionary(convertible.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            // Guard against a duplicate id ever reaching `items` (which would
+            // make the grid's ForEach ids non-unique → "ID used by multiple
+            // child views"). Cheap set membership check against what's shown.
+            var shownIDs = Set(items.map(\.id))
             for id in batchIDs {
-                if let item = byID[id] { items.append(item) }
+                if let item = byID[id], shownIDs.insert(id).inserted { items.append(item) }
             }
             classifiedCount = end
             await Task.yield()
@@ -371,30 +386,35 @@ final class LiveToStillModel: NSObject, PHPhotoLibraryChangeObserver {
     }
 }
 
-/// Background actor that finds convertible Live Photos. Excludes Loop and
-/// Bounce (playbackStyle == .imageAnimated); keeps Live and Long Exposure
-/// (playbackStyle == .livePhoto).
+/// Background actor that finds convertible Live Photos: genuine Live, Long
+/// Exposure, and Live Photos with Live turned off in the editor. Excludes Loop
+/// and Bounce (playbackStyle == .imageAnimated).
 private actor LivePhotoScanner {
-    /// Fast metadata-only fetch of every Live Photo candidate (id + date). No
+    /// Fast metadata-only fetch of every image candidate (id + date). No
     /// per-asset classification here, so it returns quickly even for a large
     /// library. Classification happens later, in batches, via `convertibleItems`.
     func fetchCandidates() -> [TimedPhoto] {
-        let options = PHFetchOptions()
-        options.predicate = NSPredicate(
-            format: "(mediaSubtypes & %d) != 0",
-            PHAssetMediaSubtype.photoLive.rawValue
-        )
-        let assets = PHAsset.fetchAssets(with: .image, options: options)
+        // Fetch EVERY image. A Live Photo whose Live was turned off in the
+        // editor loses its `.photoLive` subtype, so a subtype predicate misses
+        // it. The paired video resource survives, though, so classification
+        // detects it by resource. (No `hasAdjustments` fetch predicate — that
+        // key is unsupported and throws.)
+        let assets = PHAsset.fetchAssets(with: .image, options: nil)
         var result: [TimedPhoto] = []
+        var seen = Set<String>()
         assets.enumerateObjects { asset, _, _ in
             guard let date = asset.creationDate else { return }
+            // Dedup by localIdentifier so a candidate id can never appear twice
+            // downstream (which would make the grid's ForEach ids non-unique).
+            guard seen.insert(asset.localIdentifier).inserted else { return }
             result.append(TimedPhoto(id: asset.localIdentifier, date: date))
         }
         return result
     }
 
     /// Classify a batch of candidate ids, returning only those convertible to a
-    /// plain still (genuine Live and Long Exposure — never Loop/Bounce).
+    /// plain still (genuine Live, Long Exposure, and Live-off — never
+    /// Loop/Bounce).
     func convertibleItems(in ids: [String]) -> [LivePhotoItem] {
         guard !ids.isEmpty else { return [] }
         let assets = PHAsset.fetchAssets(withLocalIdentifiers: ids, options: nil)

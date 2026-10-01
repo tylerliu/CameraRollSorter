@@ -40,8 +40,9 @@ struct ZoomablePhotoView: View {
     // Loaded Live Photo (when this asset is Live and playback is enabled).
     @State private var livePhoto: PHLivePhoto?
 
-    /// Whether to offer press-and-hold playback: any Live-flagged asset.
-    private var isLivePhoto: Bool { variation != .none }
+    /// Whether to offer press-and-hold playback. A Live-off asset keeps its
+    /// paired video but suppresses playback, so it's treated as a still here.
+    private var isLivePhoto: Bool { variation.hasPlayableMotion }
 
     var body: some View {
         ZStack {
@@ -383,6 +384,8 @@ extension LivePhotoVariation {
         switch self {
         case .none, .live:
             Image(systemName: "livephoto")
+        case .liveOff:
+            Image(systemName: "livephoto.slash")   // Live turned off, like Photos
         case .loop:
             Image(systemName: "arrow.triangle.2.circlepath")   // continuous loop
         case .bounce:

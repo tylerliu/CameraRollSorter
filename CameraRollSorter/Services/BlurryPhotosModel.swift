@@ -136,7 +136,7 @@ final class BlurryPhotosModel: NSObject, PHPhotoLibraryChangeObserver {
     // Furthest grid row the viewer reached; the scan keeps `ScanBuffer.target`
     // items classified ahead of it (a shared, settings-driven buffer).
     private var scanAheadOf = 0
-    private var lastScanDirection: ScanDirection = .older
+    private var lastScanDirection: ScanDirection = .newer
     private var lastScanStartDate: Date?
     // True while the grid is on screen. Off → only the small preview buffer is
     // filled (home screen); on → the full buffer. Set via `setListActive`.
@@ -159,10 +159,21 @@ final class BlurryPhotosModel: NSObject, PHPhotoLibraryChangeObserver {
     }
 
     // Per-view scan-window state, bound to the pinned ScanControlsHeader. NOT
-    // shared with the other cleanup screens — each list has its own window.
-    var scanDirectionRaw = "older"
-    var scanStartEnabled = false
-    var scanStartInterval = 0.0
+    // shared with the other cleanup screens — each list has its own window,
+    // persisted under its own key prefix so it survives app relaunch.
+    private let windowStore = ScanWindowStore(prefix: "blurry")
+    var scanDirectionRaw = "newer" { didSet { windowStore.direction = scanDirectionRaw } }
+    var scanStartEnabled = false { didSet { windowStore.startEnabled = scanStartEnabled } }
+    var scanStartInterval = 0.0 { didSet { windowStore.startInterval = scanStartInterval } }
+
+    override init() {
+        super.init()
+        // Restore the persisted scan window. These assignments re-write the same
+        // values back through didSet, which is an idempotent no-op.
+        scanDirectionRaw = windowStore.direction
+        scanStartEnabled = windowStore.startEnabled
+        scanStartInterval = windowStore.startInterval
+    }
 
     private var scanDirectionSetting: ScanDirection {
         ScanDirection(rawValue: scanDirectionRaw) ?? .older

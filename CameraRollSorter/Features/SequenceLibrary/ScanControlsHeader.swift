@@ -48,80 +48,142 @@ struct ScanControlsHeader: View {
     @Binding var startEnabled: Bool
     @Binding var startInterval: Double      // seconds since 1970; 0 = unset
     // Whether the wheel picker is expanded. Collapses when not picking so it
-    // doesn't take up vertical space (the date label button toggles it).
+    // doesn't take up vertical space (the date label and the done button both
+    // toggle it).
     @State private var wheelExpanded = false
     /// Capture-date span of the owning list, used to bound and seed the picker.
     let dateRange: ClosedRange<Date>?
-    /// Called after any control change so the owner can reconcile its scan.
+    /// Called after any live control change so the owner can reconcile its scan.
+    /// Fires on every wheel tick, toggle, and order change — the visible list
+    /// updates immediately from this.
     let onChange: () -> Void
+    /// Called when the user SETTLES the window: closes the roller, changes the
+    /// order, or toggles the date window off. The owner uses this to schedule
+    /// its debounced (2s) memory cleanup. Optional — screens with no cache
+    /// (Live → Still, Blurry) pass a no-op.
+    var onSettle: () -> Void = {}
+    /// Called when the roller OPENS, so the owner cancels any pending cleanup
+    /// while the user is still picking. Optional — see `onSettle`.
+    var onCancelCleanup: () -> Void = {}
 
+    /// Called after EVERY control change (order, toggle, wheel tick, open/close).
+    /// Always reconciles the visible scan via `onChange`, then applies the
+    /// cleanup rule uniformly:
+    ///   • roller OPEN  → cancel any pending cleanup, and never schedule one
+    ///     (the user is still deciding).
+    ///   • roller CLOSED → schedule/reset the debounced (2s) cleanup, so any
+    ///     change postpones it and a burst collapses to one prune 2s after the
+    ///     last change.
+    private func notifyChange() {
+        onChange()
+        if wheelExpanded { onCancelCleanup() } else { onSettle() }
+    }
+
+    /// Expand or collapse the wheel with animation, then reconcile. Because
+    /// `notifyChange` reads the NEW `wheelExpanded`, opening cancels cleanup and
+    /// closing schedules it.
+    private func setWheel(expanded: Bool) {
+        withAnimation(.easeInOut(duration: 0.2)) { wheelExpanded = expanded }
+        notifyChange()
+    }
+
+    /// Wheel binding. Reads/writes `startInterval` directly and reconciles on
+    /// every change, so results update live as the rollers move. Snaps the
+    /// boundary to the whole selected day in the travel direction. Since the
+    /// wheel is only visible while expanded, each tick resets-then-cancels the
+    /// cleanup — i.e. no prune is ever scheduled while picking.
     private var startDate: Binding<Date> {
         Binding(
             get: {
-                let stored = startInterval == 0 ? Date() : Date(timeIntervalSince1970: startInterval)
+                let stored = startInterval == 0 ? defaultStart() : Date(timeIntervalSince1970: startInterval)
                 if let dateRange {
                     return min(max(stored, dateRange.lowerBound), dateRange.upperBound)
                 }
                 return stored
             },
             set: { newValue in
-                // Day-granular picker: snap the boundary so the whole selected
-                // day is included in the travel direction.
                 let cal = Calendar.current
                 let snapped = direction == "older"
                     ? (cal.date(bySettingHour: 23, minute: 59, second: 59, of: newValue) ?? newValue)
                     : cal.startOfDay(for: newValue)
                 startInterval = snapped.timeIntervalSince1970
-                onChange()
+                notifyChange()
             }
         )
     }
 
-    /// Default start when first enabling "from date": the midpoint of the span,
-    /// so it actually narrows (rather than the extreme, which is a no-op).
+    /// Default start when first enabling "from date". For New→Old (`older`) the
+    /// newest photos are the interesting ones, so start at the span's upper
+    /// bound ("newest from today"); for Old→New start at the lower bound. Using
+    /// the extreme means today's photos aren't filtered out of the window.
     private func defaultStart() -> Date {
         guard let dateRange else { return Date() }
-        let mid = dateRange.lowerBound.timeIntervalSince1970
-            + (dateRange.upperBound.timeIntervalSince1970 - dateRange.lowerBound.timeIntervalSince1970) / 2
-        return Date(timeIntervalSince1970: mid)
+        return direction == "older" ? dateRange.upperBound : dateRange.lowerBound
     }
 
     var body: some View {
         VStack(spacing: 8) {
             // Tags name the destination ("older"/"newer"); labels name travel.
             Picker("Scan order", selection: $direction) {
-                Text("New→Old").tag("older")
                 Text("Old→New").tag("newer")
+                Text("New→Old").tag("older")
             }
             .pickerStyle(.segmented)
             .onChange(of: direction) { _, _ in
+                // Re-seed the start to the new direction's sensible default and
+                // re-apply, so flipping direction while enabled keeps a valid
+                // window (e.g. "newest from today" vs "oldest from the start").
                 if startEnabled { startInterval = defaultStart().timeIntervalSince1970 }
-                onChange()
+                // Reconcile + apply the cleanup rule (open → suppress, closed →
+                // schedule/reset the 2s timer).
+                notifyChange()
             }
 
             HStack {
                 Toggle(direction == "older" ? "Newest from date" : "Oldest from date", isOn: $startEnabled)
                     .toggleStyle(.button)
                     .onChange(of: startEnabled) { _, isOn in
-                        if isOn { startInterval = defaultStart().timeIntervalSince1970 }
-                        wheelExpanded = isOn      // reveal the wheel when turning on
-                        onChange()
+                        if isOn {
+                            // Seed from the last-used date; only fall back to the
+                            // default (today if no range) when nothing is stored,
+                            // so re-enabling remembers where the user left off.
+                            if startInterval == 0 {
+                                startInterval = defaultStart().timeIntervalSince1970
+                            }
+                            // Opening the roller reconciles and cancels cleanup.
+                            setWheel(expanded: true)
+                        } else {
+                            // Turning the window off closes the roller and
+                            // settles (schedules the 2s cleanup).
+                            setWheel(expanded: false)
+                        }
                     }
                 if startEnabled {
-                    // Compact date label; tap to expand/collapse the wheel so it
-                    // only takes up space while actually picking.
+                    // Single bubble: the date, with a tick to its right while
+                    // the wheel is open — so "done picking" reads as part of the
+                    // same element, no second button. Tapping toggles the wheel
+                    // (open ↔ close), firing the settle/cancel callbacks via
+                    // `setWheel`.
                     Button {
-                        withAnimation(.easeInOut(duration: 0.2)) { wheelExpanded.toggle() }
+                        setWheel(expanded: !wheelExpanded)
                     } label: {
-                        Text(startDate.wrappedValue, format: .dateTime.year().month().day())
-                            .font(.subheadline)
+                        HStack(spacing: 6) {
+                            Text(startDate.wrappedValue, format: .dateTime.year().month().day())
+                                .font(.subheadline)
+                            if wheelExpanded {
+                                Image(systemName: "checkmark")
+                                    .font(.subheadline.weight(.semibold))
+                            }
+                        }
                     }
                     .buttonStyle(.bordered)
+                    .accessibilityLabel(wheelExpanded ? "Done picking date" : "Change date")
                 }
                 Spacer()
             }
             // Wheel (year/month/day rollers) shown only while expanded, so it
             // doesn't take up space the rest of the time — like the old popover.
+            // The wheel applies on every change, so results update live.
             if startEnabled && wheelExpanded {
                 Group {
                     if let dateRange {

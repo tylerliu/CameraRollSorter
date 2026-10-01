@@ -39,7 +39,7 @@ struct LiveToStillView: View {
                 ContentUnavailableView(
                     "No Live Photos",
                     systemImage: "livephoto",
-                    description: Text("No convertible Live Photos were found in this range. Loop and Bounce effects aren’t included, and photos unavailable locally can’t be converted.")
+                    description: Text("No convertible Live Photos were found in this range. This includes Live Photos with Live turned off, but not Loop or Bounce effects, and photos unavailable locally can’t be converted.")
                 )
             ),
             actionBar: { isSelecting in actionBar(isSelecting: isSelecting) }

@@ -226,6 +226,7 @@ struct CategoryRow: View {
         case let .progress(text):
             HStack(spacing: 6) {
                 ProgressView()
+                    .controlSize(.small)
                 if !text.isEmpty { Text(text) }
             }
         case let .scanning(text):
@@ -233,6 +234,7 @@ struct CategoryRow: View {
                 Text(text)
                 Text("&")
                 ProgressView()
+                    .controlSize(.small)
             }
         case let .text(text):
             Text(text)

@@ -48,7 +48,7 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
     private var lastScanGeoKilometers = 1.0
     // Scan direction/start-date config captured at the last scan, so
     // `applySettings` can reconcile changes without a needless full rescan.
-    private var lastScanDirection: ScanDirection = .older
+    private var lastScanDirection: ScanDirection = .newer
     private var lastScanStartDate: Date?
 
     // Incremental scan state. Photos are sorted once, then processed in
@@ -344,10 +344,25 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
         UserDefaults.standard.object(forKey: "review.geoGateKilometers") as? Double ?? 1.0
     }
     // Per-view scan-window state, bound to the pinned ScanControlsHeader. NOT
-    // shared with the Live→Still screen — each list has its own window.
-    var scanDirectionRaw = "older"
-    var scanStartEnabled = false
-    var scanStartInterval = 0.0
+    // shared with the other cleanup screens — each list has its own window,
+    // persisted under its own key prefix so it survives app relaunch.
+    private let windowStore = ScanWindowStore(prefix: "similar")
+    var scanDirectionRaw = "newer" { didSet { windowStore.direction = scanDirectionRaw } }
+    var scanStartEnabled = false { didSet { windowStore.startEnabled = scanStartEnabled } }
+    var scanStartInterval = 0.0 { didSet { windowStore.startInterval = scanStartInterval } }
+
+    override init() {
+        super.init()
+        // Restore the persisted scan window. These assignments re-write the same
+        // values back through didSet, which is an idempotent no-op.
+        scanDirectionRaw = windowStore.direction
+        scanStartEnabled = windowStore.startEnabled
+        scanStartInterval = windowStore.startInterval
+        // Keep the last-scan markers in sync with the restored window so the
+        // first applySettings() doesn't see a phantom change.
+        lastScanDirection = scanDirectionSetting
+        lastScanStartDate = scanStartDateSetting
+    }
 
     private var scanDirectionSetting: ScanDirection {
         ScanDirection(rawValue: scanDirectionRaw) ?? .older
@@ -390,7 +405,11 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
             lastScanDirection = newDirection
             lastScanStartDate = newStart
             restartScanForWindow(direction: newDirection, startDate: newStart)
-            scheduleCachePrune(direction: newDirection, startDate: newStart)
+            // NOTE: the destructive cache prune is NOT scheduled here. It only
+            // runs when the user settles the scan window (closes the date
+            // roller, changes the order, or toggles the date window off) via
+            // `scheduleWindowCleanup()`. Opening the roller cancels it. This
+            // keeps the reuse cache intact while the user is still picking.
             return
         }
 
@@ -434,19 +453,29 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
         }
     }
 
-    /// Debounced data-layer cleanup: after the last scan-scope change settles,
-    /// drop cached pairs for photos no longer in the window. Reruns reset the
-    /// timer, so a burst of adjustments prunes once. The delay is generous so a
-    /// user still deciding on a date in the calendar (which can pause well over
-    /// a couple seconds between taps) doesn't evict the reuse cache — the prune
-    /// is purely a memory optimization and never affects the displayed list.
-    private func scheduleCachePrune(direction: ScanDirection, startDate: Date?) {
+    /// Schedule the debounced data-layer cleanup after the user SETTLES the scan
+    /// window — closing the date roller, changing the order, or toggling the
+    /// date window off. Drops cached pairs for photos no longer in the current
+    /// window 2s later. Reruns reset the timer, so a burst of settles prunes
+    /// once. The prune is purely a memory optimization and never affects the
+    /// displayed list. Opening the roller again cancels it via
+    /// `cancelWindowCleanup()`, so nothing is evicted while the user is still
+    /// deciding.
+    func scheduleWindowCleanup() {
+        let direction = lastScanDirection
+        let startDate = lastScanStartDate
         windowPruneTask?.cancel()
         windowPruneTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 10_000_000_000)
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
             guard !Task.isCancelled else { return }
             self?.pruneCacheToWindow(direction: direction, startDate: startDate)
         }
+    }
+
+    /// Cancel any pending window cleanup. Called when the date roller opens, so
+    /// the reuse cache survives while the user is still picking a date.
+    func cancelWindowCleanup() {
+        windowPruneTask?.cancel()
     }
 
     /// Drop cached pairs/photos no longer in the given window. Only runs if the
