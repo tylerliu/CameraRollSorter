@@ -152,9 +152,14 @@ struct PhotoSelectionGrid<ActionBar: View>: View {
 
     @ViewBuilder
     private var content: some View {
-        if isScanning && ids.isEmpty {
+        // Show the spinner whenever a scan is active OR more candidates remain
+        // to classify, so an in-progress rescan (which momentarily empties
+        // `ids` and may churn through non-matching candidates) never flashes the
+        // empty state. The empty state appears ONLY once the scan has truly
+        // finished with nothing left to find.
+        if ids.isEmpty && (isScanning || hasMoreToScan) {
             Spacer(); ProgressView(scanningText); Spacer()
-        } else if hasScanned && ids.isEmpty && !isScanning {
+        } else if hasScanned && ids.isEmpty && !isScanning && !hasMoreToScan {
             emptyState
         } else {
             grid
