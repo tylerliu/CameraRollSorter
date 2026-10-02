@@ -214,9 +214,16 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
         scanAheadOf = 0
         scrollAnchorID = nil
         isScanning = true
+        let token = revision
         scanTask = Task {
             let result = await scanner.scan()
-            guard !Task.isCancelled else { return }
+            // If a newer refresh took over (revision changed) it owns the flag;
+            // otherwise this cancelled task must still clear `isScanning` so the
+            // home-row spinner doesn't strand on a near-empty library at launch.
+            guard !Task.isCancelled else {
+                if revision == token { isScanning = false }
+                return
+            }
             photos = result.photos
             fetchResult = result.fetchResult
             sortedPhotos = SequenceGrouping.scanOrdered(
@@ -232,7 +239,7 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
             // Fill the initial buffer of groups from the front of the list.
             scanAheadOf = 0
             await runBatches()
-            guard !Task.isCancelled else { return }
+            guard revision == token else { return }
             hasScanned = true
             isScanning = false
         }
@@ -729,6 +736,12 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
             applyThreshold()
             isScanning = false
             hasScanned = true
+            // Photos added BEYOND the scanned frontier (e.g. everything new when
+            // nothing was scanned yet) sit in the unscanned tail. Resume so the
+            // buffer fills instead of stranding `hasMoreToScan` with no running
+            // task — the home-row spinner that persisted after adding photos via
+            // the limited-library picker.
+            resumeIfNeeded()
             return
         }
 

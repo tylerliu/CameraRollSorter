@@ -136,24 +136,37 @@ class IncrementalScanModel<Item: ScanItem> {
         scrollAnchorID = nil
         isScanning = true
         fetchingCandidates = true
-        scanTask = Task {
-            let found = await fetchCandidates()
+        startScan {
+            let found = await self.fetchCandidates()
             guard !Task.isCancelled else { return }
-            allCandidates = found
+            self.allCandidates = found
             // Window with the settings as of NOW: a window change made during
             // the fetch is deferred to here (see `applyScanSettings`).
-            lastScanDirection = scanDirectionSetting
-            lastScanStartDate = scanStartDateSetting
-            candidates = SequenceGrouping.scanOrdered(
-                found, direction: lastScanDirection, startDate: lastScanStartDate
+            self.lastScanDirection = self.scanDirectionSetting
+            self.lastScanStartDate = self.scanStartDateSetting
+            self.candidates = SequenceGrouping.scanOrdered(
+                found, direction: self.lastScanDirection, startDate: self.lastScanStartDate
             )
-            fetchingCandidates = false
-            hasScanned = true
-            await classifyBatches()
-            // A cancelled task must not clear the flag for the scan that
-            // replaced it.
-            if !Task.isCancelled { isScanning = false }
+            self.fetchingCandidates = false
+            self.hasScanned = true
+            await self.classifyBatches()
         }
+    }
+
+    /// Run `work` as the one live scan task, flipping `isScanning` off when it
+    /// settles — unless a newer `startScan` has already replaced it, in which
+    /// case that newer task owns the flag. This is why the home-row spinner no
+    /// longer strands when a scan is cancelled (e.g. the launch rescan on a
+    /// near-empty roll): the surviving task always clears `isScanning`.
+    private func startScan(_ work: @escaping @MainActor () async -> Void) {
+        isScanning = true
+        var task: Task<Void, Never>?
+        task = Task {
+            await work()
+            // Only the current task settles the flag; a replacement owns it.
+            if self.scanTask == task { self.isScanning = false }
+        }
+        scanTask = task
     }
 
     /// Classify more as the grid scrolls. `currentIndex` is the bottom-most
@@ -204,16 +217,13 @@ class IncrementalScanModel<Item: ScanItem> {
         items = []
         classifiedCount = 0
         scanAheadOf = 0
-        isScanning = true
-        scanTask = Task {
-            await classifyBatches()
-            if !Task.isCancelled { isScanning = false }
-        }
+        startScan { await self.classifyBatches() }
     }
 
     /// Stop the batch loop without touching results.
     func cancelClassification() {
         scanTask?.cancel()
+        scanTask = nil
         isScanning = false
     }
 
@@ -221,11 +231,7 @@ class IncrementalScanModel<Item: ScanItem> {
     /// nothing is running.
     private func resumeIfNeeded() {
         guard canRead, hasMoreToScan, !isScanning, !bufferFull else { return }
-        isScanning = true
-        scanTask = Task {
-            await classifyBatches()
-            if !Task.isCancelled { isScanning = false }
-        }
+        startScan { await self.classifyBatches() }
     }
 
     /// Classify successive `batchSize` slices of `candidates`, appending matches
@@ -301,11 +307,19 @@ class IncrementalScanModel<Item: ScanItem> {
         classifiedCount = (frontier ?? -1) + 1
 
         let addedInside = candidates.prefix(classifiedCount).filter { added.contains($0.id) }
-        guard !addedInside.isEmpty else { return }
-        let newItems = await classify(Array(addedInside))
-        let itemByID = Dictionary((items + newItems).map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-        // Rebuild in window order so new matches land in position, not at the end.
-        items = candidates.prefix(classifiedCount).compactMap { itemByID[$0.id] }
+        if !addedInside.isEmpty {
+            let newItems = await classify(Array(addedInside))
+            let itemByID = Dictionary((items + newItems).map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            // Rebuild in window order so new matches land in position, not at the end.
+            items = candidates.prefix(classifiedCount).compactMap { itemByID[$0.id] }
+        }
+
+        // Candidates added BEYOND the classified frontier (e.g. everything new
+        // when nothing was matched yet) sit unclassified in the tail. Resume so
+        // the buffer fills instead of stranding `hasMoreToScan` with no running
+        // task — the home-row spinner that persisted after adding photos via
+        // the limited-library picker.
+        resumeIfNeeded()
     }
 }
 
