@@ -95,309 +95,61 @@ private actor BlurryPhotoScanner {
     }
 }
 
-/// Per-screen scan model for the Blurry photos flow. A near-clone of
-/// `LiveToStillModel`: candidates are fetched fast (metadata only), ordered and
-/// windowed with `SequenceGrouping.scanOrdered`, then classified in buffered
-/// batches on `BlurryPhotoScanner` so a large library streams in rather than
-/// blocking. "Convertible Live Photo" classification is replaced by low-
-/// aesthetic classification against the active aesthetics-score cutoff.
-///
-/// NOTE: `applySensitivity()`, `syncLibrary()`, `photoLibraryDidChange(_:)`, and
-/// `deletePhotos(_:)` are added by later tasks (4.3 / 4.4). This task (4.2)
-/// implements the scan lifecycle only. A minimal `photoLibraryDidChange`
-/// placeholder is present so the `PHPhotoLibraryChangeObserver` conformance
-/// compiles; task 4.3 fleshes it out.
-@MainActor @Observable
-final class BlurryPhotosModel: NSObject, PHPhotoLibraryChangeObserver {
-    var authorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
-    var items: [BlurryPhotoItem] = []
-    var isScanning = false
-    var hasScanned = false
-    var errorMessage: String?
-    // Remembers the top-visible grid item so scroll position is restored when
-    // navigating away and back within a session. Not persisted across launches.
-    var scrollAnchorID: String?
+extension BlurryPhotoItem: ScanItem {}
 
-    private let scanner = BlurryPhotoScanner()
-    private var scanTask: Task<Void, Never>?
-    // True while `scan()` is fetching the candidate set. Window changes wait
-    // for it instead of cancelling it.
-    private var fetchingCandidates = false
-    private var observing = false
+/// Per-screen scan model for the Low-aesthetic flow. The shared incremental
+/// scan lives in `IncrementalScanModel`; this adds aesthetics classification,
+/// the sensitivity re-check, and deletion.
+final class BlurryPhotosModel: IncrementalScanModel<BlurryPhotoItem> {
+    @ObservationIgnored private let scanner = BlurryPhotoScanner()
+    // Cutoff in effect for classification. Changed only via `applySensitivity()`
+    // so a settings change can't race the batches.
+    @ObservationIgnored private var activeCutoff: Double = BlurSensitivity.currentCutoff
 
-    // Incremental scan state. The candidate photos are fetched once (fast,
-    // metadata only) and ordered by the direction/start-date window. They are
-    // then classified in batches on demand so a large library never stalls: the
-    // grid shows results as they stream in and keeps a rolling buffer ahead of
-    // the scroll position.
-    private var allCandidates: [TimedPhoto] = [] // full fetched candidate set (unwindowed)
-    private var candidates: [TimedPhoto] = []    // ordered+windowed candidate photos
-    private var classifiedCount = 0              // how far along `candidates` we've classified
     // Fewer per batch than Live→Still: each item does an image decode + a
     // Vision aesthetics request, so smaller batches keep the UI responsive.
-    private let batchSize = 120                  // candidates classified per step
-    // Bottom-most grid row currently on screen; the scan keeps
-    // `ScanBuffer.target` items classified ahead of it (a shared,
-    // settings-driven buffer), and pauses after the batch in flight when the
-    // viewer scrolls back up.
-    private var scanAheadOf = 0
-    private var lastScanDirection: ScanDirection = .newer
-    private var lastScanStartDate: Date?
-    // True while the grid is on screen. Off → only the small preview buffer is
-    // filled (home screen); on → the full buffer. Set via `setListActive`.
-    private var listActive = false
-    // Cutoff captured at scan start so a mid-scan settings change is handled by
-    // `applySensitivity()` rather than racing the batches.
-    private var activeCutoff: Double = BlurSensitivity.currentCutoff
-
-    var canRead: Bool { authorization == .authorized || authorization == .limited }
-
-    /// True while there are still unclassified candidates in the window.
-    var hasMoreToScan: Bool { classifiedCount < candidates.count }
-
-    /// Capture-date span of all photo candidates, to bound/seed the start-date
-    /// picker. nil before the first scan or when there are none.
-    var libraryDateRange: ClosedRange<Date>? {
-        guard let min = allCandidates.map(\.date).min(),
-              let max = allCandidates.map(\.date).max(), min <= max else { return nil }
-        return min...max
+    init() {
+        super.init(windowPrefix: "blurry", batchSize: 120)
     }
 
-    // Per-view scan-window state, bound to the pinned ScanControlsHeader. NOT
-    // shared with the other cleanup screens — each list has its own window,
-    // persisted under its own key prefix so it survives app relaunch.
-    private let windowStore = ScanWindowStore(prefix: "blurry")
-    var scanDirectionRaw = "newer" { didSet { windowStore.direction = scanDirectionRaw } }
-    var scanStartEnabled = false { didSet { windowStore.startEnabled = scanStartEnabled } }
-    var scanStartInterval = 0.0 { didSet { windowStore.startInterval = scanStartInterval } }
-
-    override init() {
-        super.init()
-        // Restore the persisted scan window. These assignments re-write the same
-        // values back through didSet, which is an idempotent no-op.
-        scanDirectionRaw = windowStore.direction
-        scanStartEnabled = windowStore.startEnabled
-        scanStartInterval = windowStore.startInterval
-    }
-
-    private var scanDirectionSetting: ScanDirection {
-        ScanDirection(rawValue: scanDirectionRaw) ?? .older
-    }
-    private var scanStartDateSetting: Date? {
-        guard scanStartEnabled, scanStartInterval > 0 else { return nil }
-        return Date(timeIntervalSince1970: scanStartInterval)
-    }
-
-    /// Scan for blurry photos incrementally. Fetches the candidate set fast
-    /// (metadata predicate), orders it by the current direction/start-date
-    /// window, then classifies in buffered batches so the UI stays responsive.
-    func scan() {
-        authorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
-        guard canRead else {
-            items = []
-            hasScanned = false
-            return
-        }
-        if !observing {
-            PHPhotoLibrary.shared().register(self)
-            observing = true
-        }
-        scanTask?.cancel()
-        errorMessage = nil
-        items = []
-        allCandidates = []
-        candidates = []
-        classifiedCount = 0
-        scanAheadOf = 0
-        scrollAnchorID = nil
-        isScanning = true
-        fetchingCandidates = true
-        // Capture the cutoff for this scan so a mid-scan settings change is
-        // reconciled by applySensitivity() rather than racing classifyBatches().
+    override func scan() {
         activeCutoff = BlurSensitivity.currentCutoff
-        scanTask = Task {
-            // Fast metadata-only fetch of every candidate. Ordering and the
-            // per-image blur classification are deferred so nothing blocks up front.
-            let found = await scanner.fetchCandidates()
-            guard !Task.isCancelled else { return }
-            allCandidates = found
-            // Window with the settings as of NOW: a window change made during
-            // the fetch is deferred to here (see `applyScanSettings`).
-            lastScanDirection = scanDirectionSetting
-            lastScanStartDate = scanStartDateSetting
-            candidates = SequenceGrouping.scanOrdered(
-                found, direction: lastScanDirection, startDate: lastScanStartDate
-            )
-            fetchingCandidates = false
-            hasScanned = true
-            await classifyBatches()
-            // A cancelled task must not clear the flag for the scan that
-            // replaced it.
-            if !Task.isCancelled { isScanning = false }
-        }
+        super.scan()
     }
 
-    /// Classify the next unclassified candidates on demand as the grid scrolls.
-    /// `currentIndex` is the bottom-most visible row (or the item count when the
-    /// grid's end is visible); it can move either way.
-    func scanMore(currentIndex: Int) {
-        scanAheadOf = currentIndex
-        resumeIfNeeded()
+    override func fetchCandidates() async -> [TimedPhoto] {
+        await scanner.fetchCandidates()
     }
 
-    /// Start classifying if the buffer ahead of the viewer isn't full and
-    /// nothing is running.
-    private func resumeIfNeeded() {
-        guard canRead, hasMoreToScan, !isScanning, !bufferFull else { return }
-        isScanning = true
-        scanTask = Task {
-            await classifyBatches()
-            if !Task.isCancelled { isScanning = false }
-        }
+    override func classify(_ batch: [TimedPhoto]) async -> [BlurryPhotoItem] {
+        await scanner.lowAestheticItems(in: batch, cutoff: activeCutoff)
     }
 
-    /// Called when the grid appears/disappears. Opening it lifts the buffer from
-    /// the home-screen preview cap to the full one, resuming classification.
-    func setListActive(_ active: Bool) {
-        listActive = active
-        if active { resumeIfNeeded() }
-    }
-
-    // True while another cleanup feature's screen is open, so this scan
-    // doesn't compete with it for Vision time. Set by the home screen.
-    private var isPaused = false
-
-    /// Pause (after the batch in flight) or resume this scan.
-    func setPaused(_ paused: Bool) {
-        guard paused != isPaused else { return }
-        isPaused = paused
-        if !paused { resumeIfNeeded() }
-    }
-
-    /// True when classification should stop: paused, or enough items buffered
-    /// ahead of the viewer.
-    private var bufferFull: Bool {
-        isPaused || items.count - scanAheadOf >= ScanBuffer.effectiveTarget(listActive: listActive)
-    }
-
-    /// Classify successive `batchSize` slices of `candidates`, appending the
-    /// blurry ones to `items`. Stops when the candidate list is exhausted or
-    /// once there are `ScanBuffer.target` items classified beyond the viewed
-    /// position. Yields between batches so the UI stays responsive.
-    private func classifyBatches() async {
-        while hasMoreToScan {
-            if Task.isCancelled { return }
-            if bufferFull { break }
-
-            let start = classifiedCount
-            let end = min(start + batchSize, candidates.count)
-            let batch = Array(candidates[start..<end])
-            let blurry = await scanner.lowAestheticItems(in: batch, cutoff: activeCutoff)
-            if Task.isCancelled { return }
-            // Preserve window order: `lowAestheticItems` returns candidate-ordered
-            // results, but append via lookup to keep the invariant explicit.
-            let byID = Dictionary(blurry.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-            for candidate in batch {
-                if let item = byID[candidate.id] { items.append(item) }
-            }
-            classifiedCount = end
-            await Task.yield()
-        }
-    }
-
-    /// Called when the direction/start-date controls change. Restarts the view
-    /// (clears the grid, re-populates from the new window front) while keeping
-    /// the fetched candidate set for reuse.
-    func applyScanSettings() {
-        // While the initial fetch is running there's nothing to re-window, and
-        // cancelling it would leave the list empty. The fetch picks up the
-        // current settings when it lands.
-        guard !fetchingCandidates else { return }
-        let newDirection = scanDirectionSetting
-        let newStart = scanStartDateSetting
-        guard newDirection != lastScanDirection || newStart != lastScanStartDate else { return }
-        lastScanDirection = newDirection
-        lastScanStartDate = newStart
-
-        scanTask?.cancel()
-        // Re-window from the FULL fetched candidate set (not the previously
-        // windowed subset) so widening the window brings items back. Rebuild
-        // from the front.
-        candidates = SequenceGrouping.scanOrdered(
-            allCandidates, direction: newDirection, startDate: newStart
-        )
-        items = []
-        classifiedCount = 0
-        scanAheadOf = 0
-        scrollAnchorID = nil
-        isScanning = true
-        scanTask = Task {
-            await classifyBatches()
-            if !Task.isCancelled { isScanning = false }
-        }
-    }
-
-    /// Called when the sensitivity (variance cutoff) setting changes. No-ops
-    /// when the cutoff is unchanged, so it's cheap to call on every settings
-    /// dismiss (Requirement 7.4).
+    /// Called when the sensitivity setting changes; no-op when unchanged.
     ///
-    /// The re-check is ASYMMETRIC, exploiting that the low-aesthetic decision is
-    /// monotonic in the cutoff (flagged when score < cutoff):
-    /// - LOWERING the cutoff (less sensitive): the new flagged set is a SUBSET of
-    ///   the current one. Every photo that still qualifies was already flagged
-    ///   and carries its stored aesthetics `score`, so we simply re-filter
-    ///   `items` in place — no re-scan, no classifier work, and scroll position
-    ///   is kept because we only remove rows. `classifiedCount`/`candidates` are
-    ///   left untouched: we've merely tightened the filter over the same
-    ///   classified prefix, and any later batches classified via
-    ///   `classifyBatches` will use the new (lower) `activeCutoff` too, so
-    ///   results stay consistent.
-    /// - RAISING the cutoff (more sensitive): photos that previously passed can
-    ///   now qualify, but their scores were never retained, so a full re-scan
-    ///   over the same candidate window from the front is required.
+    /// The flagged decision (score < cutoff) is monotonic, so:
+    /// - LOWERING the cutoff yields a subset of current results: re-filter
+    ///   `items` in place by stored score (no re-scan, scroll kept). Later
+    ///   batches use the new cutoff, so results stay consistent.
+    /// - RAISING it can admit photos whose scores were never kept, so the
+    ///   window is re-classified from the front.
     func applySensitivity() {
         let newCutoff = BlurSensitivity.currentCutoff
         guard newCutoff != activeCutoff else { return }
-        let loweringCutoff = newCutoff < activeCutoff
+        let lowering = newCutoff < activeCutoff
         activeCutoff = newCutoff
-        if loweringCutoff {
-            // LESS sensitive: the new flagged set is a SUBSET of the current
-            // results. Every still-flagged photo was already flagged, so just
-            // re-filter the current items in place by their stored aesthetics
-            // score — no re-scan, no classifier work. This also keeps scroll
-            // position (we only remove rows).
-            scanTask?.cancel()
+        if lowering {
+            cancelClassification()
             items = items.filter { BlurSensitivity.isBlurry(variance: $0.score, cutoff: newCutoff) }
-            // Note: classifiedCount/candidates are unchanged — we've merely
-            // tightened the filter over the SAME already-classified prefix. Do
-            // NOT reset them.
-            isScanning = false
         } else {
-            // MORE sensitive: photos that previously passed can now qualify, and
-            // their aesthetics scores were never retained, so a full re-scan over
-            // the same candidate window from the front is required.
-            scanTask?.cancel()
-            items = []
-            classifiedCount = 0
-            scanAheadOf = 0
-            isScanning = true
-            scanTask = Task {
-                await classifyBatches()
-                if !Task.isCancelled { isScanning = false }
-            }
+            restartClassification()
         }
     }
 
-    /// Delete the selected photos with a single batched asset-deletion request,
-    /// mirroring `PhotoLibraryModel.deletePhotos`. There is **no** in-app
-    /// confirmation dialog: the OS Recently Deleted prompt is the only gate
-    /// (Requirement 8.4). Guards write authorization first — if changes aren't
-    /// permitted it throws `writeAccessRequired` and leaves `items` untouched
-    /// (Requirement 8.6). Runs exactly one `performChanges` block; on success it
-    /// removes the deleted ids from `items` and returns the count (Requirement
-    /// 8.5). On failure/cancel the continuation throws (`changeRejected` or the
-    /// underlying error) and `items` is left unchanged (Requirement 8.7).
-    /// Errors are also surfaced via `errorMessage` for the view's alert.
+    /// Delete the selected photos in one batched request. There is no in-app
+    /// confirmation: the OS Recently Deleted prompt is the only gate. On
+    /// failure/cancel `items` is unchanged and the error is rethrown (and
+    /// surfaced via `errorMessage` unless the user cancelled).
     @discardableResult
     func deletePhotos(_ identifiers: Set<String>) async throws -> Int {
         guard canRead else {
@@ -434,88 +186,5 @@ final class BlurryPhotosModel: NSObject, PHPhotoLibraryChangeObserver {
 
         removeFromCurrentResults(Set(assets.map(\.localIdentifier)))
         return assets.count
-    }
-
-    /// Drop the deleted ids from every result surface so the grid and the
-    /// windowed/full candidate sets stay consistent after a deletion. Parallels
-    /// `PhotoLibraryModel.removeFromCurrentResults`.
-    private func removeFromCurrentResults(_ identifiers: Set<String>) {
-        guard !identifiers.isEmpty else { return }
-        items.removeAll { identifiers.contains($0.id) }
-        candidates.removeAll { identifiers.contains($0.id) }
-        allCandidates.removeAll { identifiers.contains($0.id) }
-        classifiedCount = min(classifiedCount, candidates.count)
-    }
-
-    deinit { PHPhotoLibrary.shared().unregisterChangeObserver(self) }
-
-    nonisolated func photoLibraryDidChange(_ changeInstance: PHChange) {
-        // PhotoKit delivers this on a background thread; do all work on the main
-        // actor. An added/deleted photo changes the candidate set, so reconcile
-        // incrementally rather than resetting the grid.
-        Task { @MainActor [weak self] in await self?.syncLibrary() }
-    }
-
-    /// Incrementally reconcile the grid with the current library — used on
-    /// library changes and scene-activation — WITHOUT resetting scroll. Fetches
-    /// the candidate set fresh, then adds/removes items in place:
-    /// - removed candidates drop out of `items`/`candidates`/`allCandidates`
-    /// - added candidates are appended to the unclassified tail so scanMore
-    ///   reaches them; any already inside the classified window are classified
-    ///   now and inserted in window order.
-    /// `scrollAnchorID` is preserved throughout (no scroll reset, Requirement 9.3).
-    func syncLibrary() async {
-        authorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
-        guard canRead else { items = []; hasScanned = false; return }
-        // If we never scanned, a plain scan is correct (nothing to preserve).
-        guard hasScanned, !isScanning else { if !hasScanned { scan() }; return }
-
-        let found = await scanner.fetchCandidates()
-        let oldIDs = Set(allCandidates.map(\.id))
-        let newIDs = Set(found.map(\.id))
-        let added = newIDs.subtracting(oldIDs)
-        let removed = oldIDs.subtracting(newIDs)
-        guard !added.isEmpty || !removed.isEmpty else { return }
-
-        allCandidates = found
-
-        // Remove dropped photos everywhere. Preserves scroll: SwiftUI keeps the
-        // remaining rows in place rather than resetting.
-        if !removed.isEmpty {
-            items.removeAll { removed.contains($0.id) }
-        }
-
-        // Rebuild the windowed candidate list from the fresh set, then figure
-        // out how far we'd classified (by matching already-shown items).
-        let shownIDs = Set(items.map(\.id))
-        candidates = SequenceGrouping.scanOrdered(
-            found, direction: scanDirectionSetting, startDate: scanStartDateSetting
-        )
-        // The classified frontier is the furthest candidate index whose id is
-        // already shown; anything added at or before it should be classified now.
-        let frontier = candidates.lastIndex { shownIDs.contains($0.id) }
-        classifiedCount = (frontier ?? -1) + 1
-
-        // Classify any added candidates that fall within the frontier and insert
-        // them in window order. Added photos beyond the frontier stay in the
-        // unclassified tail for scanMore.
-        let addedInside = added.isEmpty ? [] : candidates.prefix(classifiedCount).filter { added.contains($0.id) }
-        if !addedInside.isEmpty {
-            let newItems = await scanner.lowAestheticItems(in: addedInside, cutoff: activeCutoff)
-            let blurryAdded = Set(newItems.map(\.id))
-            // Rebuild `items` in window order over the classified prefix so the
-            // new ones land in their correct position (not at the end).
-            let itemByID = Dictionary(
-                (items + newItems).map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a }
-            )
-            var rebuilt: [BlurryPhotoItem] = []
-            for cand in candidates.prefix(classifiedCount) {
-                if shownIDs.contains(cand.id) || blurryAdded.contains(cand.id),
-                   let item = itemByID[cand.id] {
-                    rebuilt.append(item)
-                }
-            }
-            items = rebuilt
-        }
     }
 }

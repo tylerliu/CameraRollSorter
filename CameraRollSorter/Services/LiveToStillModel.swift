@@ -27,302 +27,23 @@ struct LivePhotoItem: Identifiable, Sendable {
     let date: Date
 }
 
-@MainActor @Observable
-final class LiveToStillModel: NSObject, PHPhotoLibraryChangeObserver {
-    var authorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
-    var items: [LivePhotoItem] = []
-    var isScanning = false
-    var hasScanned = false
-    var errorMessage: String?
-    // Remembers the top-visible grid item so scroll position is restored when
-    // navigating away and back within a session. Not persisted across launches.
-    var scrollAnchorID: String?
+extension LivePhotoItem: ScanItem {}
 
-    private let scanner = LivePhotoScanner()
-    private var scanTask: Task<Void, Never>?
-    // True while `scan()` is fetching the candidate set. Window changes wait
-    // for it instead of cancelling it.
-    private var fetchingCandidates = false
-    private var observing = false
+/// Per-screen scan model for Live → Still. The shared incremental scan lives in
+/// `IncrementalScanModel`; this adds Live Photo classification and conversion.
+final class LiveToStillModel: IncrementalScanModel<LivePhotoItem> {
+    @ObservationIgnored private let scanner = LivePhotoScanner()
 
-    // Incremental scan state. The candidate Live Photos are fetched once (fast,
-    // metadata only) and ordered by the direction/start-date window. They are
-    // then classified in batches on demand so a large library never stalls: the
-    // grid shows results as they stream in and keeps a rolling buffer ahead of
-    // the scroll position.
-    private var allCandidates: [TimedPhoto] = [] // full fetched candidate set (unwindowed)
-    private var candidates: [TimedPhoto] = []    // ordered+windowed candidate Live Photos
-    private var classifiedCount = 0              // how far along `candidates` we've classified
-    private let batchSize = 200                 // candidates classified per step
-    // Bottom-most grid row currently on screen; the scan keeps
-    // `ScanBuffer.target` items classified ahead of it (a shared,
-    // settings-driven buffer), and pauses after the batch in flight when the
-    // viewer scrolls back up.
-    private var scanAheadOf = 0
-    private var lastScanDirection: ScanDirection = .newer
-    private var lastScanStartDate: Date?
-    // True while the grid is on screen. Off → only the small preview buffer is
-    // filled (home screen); on → the full buffer. Set via `setListActive`.
-    private var listActive = false
-
-    var canRead: Bool { authorization == .authorized || authorization == .limited }
-
-    /// True while there are still unclassified candidates in the window.
-    var hasMoreToScan: Bool { classifiedCount < candidates.count }
-
-    /// Capture-date span of all Live Photo candidates, to bound/seed the
-    /// start-date picker. nil before the first scan or when there are none.
-    var libraryDateRange: ClosedRange<Date>? {
-        guard let min = allCandidates.map(\.date).min(),
-              let max = allCandidates.map(\.date).max(), min <= max else { return nil }
-        return min...max
+    init() {
+        super.init(windowPrefix: "liveToStill", batchSize: 200)
     }
 
-    // Per-view scan-window state, bound to the pinned ScanControlsHeader. NOT
-    // shared with the other cleanup screens — each list has its own window,
-    // persisted under its own key prefix so it survives app relaunch.
-    private let windowStore = ScanWindowStore(prefix: "liveToStill")
-    var scanDirectionRaw = "newer" { didSet { windowStore.direction = scanDirectionRaw } }
-    var scanStartEnabled = false { didSet { windowStore.startEnabled = scanStartEnabled } }
-    var scanStartInterval = 0.0 { didSet { windowStore.startInterval = scanStartInterval } }
-
-    override init() {
-        super.init()
-        // Restore the persisted scan window. These assignments re-write the same
-        // values back through didSet, which is an idempotent no-op.
-        scanDirectionRaw = windowStore.direction
-        scanStartEnabled = windowStore.startEnabled
-        scanStartInterval = windowStore.startInterval
+    override func fetchCandidates() async -> [TimedPhoto] {
+        await scanner.fetchCandidates()
     }
 
-    private var scanDirectionSetting: ScanDirection {
-        ScanDirection(rawValue: scanDirectionRaw) ?? .older
-    }
-    private var scanStartDateSetting: Date? {
-        guard scanStartEnabled, scanStartInterval > 0 else { return nil }
-        return Date(timeIntervalSince1970: scanStartInterval)
-    }
-
-    /// Scan for convertible Live Photos incrementally. Fetches the candidate set
-    /// fast (metadata predicate), orders it by the current direction/start-date
-    /// window, then classifies in buffered batches so the UI stays responsive.
-    func scan() {
-        authorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
-        guard canRead else {
-            items = []
-            hasScanned = false
-            return
-        }
-        if !observing {
-            PHPhotoLibrary.shared().register(self)
-            observing = true
-        }
-        scanTask?.cancel()
-        errorMessage = nil
-        items = []
-        allCandidates = []
-        candidates = []
-        classifiedCount = 0
-        scanAheadOf = 0
-        scrollAnchorID = nil
-        isScanning = true
-        fetchingCandidates = true
-        scanTask = Task {
-            // Fast metadata-only fetch of every Live Photo candidate. Ordering
-            // and classification (Live vs Loop/Bounce/Long) are deferred so
-            // nothing blocks up front.
-            let found = await scanner.fetchCandidates()
-            guard !Task.isCancelled else { return }
-            allCandidates = found
-            // Window with the settings as of NOW: a window change made during
-            // the fetch is deferred to here (see `applyScanSettings`).
-            lastScanDirection = scanDirectionSetting
-            lastScanStartDate = scanStartDateSetting
-            candidates = SequenceGrouping.scanOrdered(
-                found, direction: lastScanDirection, startDate: lastScanStartDate
-            )
-            fetchingCandidates = false
-            hasScanned = true
-            await classifyBatches()
-            // A cancelled task must not clear the flag for the scan that
-            // replaced it.
-            if !Task.isCancelled { isScanning = false }
-        }
-    }
-
-    /// Classify the next unclassified candidates on demand as the grid scrolls.
-    /// `currentIndex` is the bottom-most visible row (or the item count when the
-    /// grid's end is visible); it can move either way.
-    func scanMore(currentIndex: Int) {
-        scanAheadOf = currentIndex
-        resumeIfNeeded()
-    }
-
-    /// Start classifying if the buffer ahead of the viewer isn't full and
-    /// nothing is running.
-    private func resumeIfNeeded() {
-        guard canRead, hasMoreToScan, !isScanning, !bufferFull else { return }
-        isScanning = true
-        scanTask = Task {
-            await classifyBatches()
-            if !Task.isCancelled { isScanning = false }
-        }
-    }
-
-    /// Called when the grid appears/disappears. Opening it lifts the buffer from
-    /// the home-screen preview cap to the full one, resuming classification.
-    func setListActive(_ active: Bool) {
-        listActive = active
-        if active { resumeIfNeeded() }
-    }
-
-    // True while another cleanup feature's screen is open, so this scan
-    // doesn't compete with it. Set by the home screen.
-    private var isPaused = false
-
-    /// Pause (after the batch in flight) or resume this scan.
-    func setPaused(_ paused: Bool) {
-        guard paused != isPaused else { return }
-        isPaused = paused
-        if !paused { resumeIfNeeded() }
-    }
-
-    /// True when classification should stop: paused, or enough items buffered
-    /// ahead of the viewer.
-    private var bufferFull: Bool {
-        isPaused || items.count - scanAheadOf >= ScanBuffer.effectiveTarget(listActive: listActive)
-    }
-
-    /// Classify successive `batchSize` slices of `candidates`, appending the
-    /// convertible ones to `items`. Stops when the candidate list is exhausted
-    /// or once there are `ScanBuffer.target` items classified beyond the viewed
-    /// position. Yields between batches so the UI stays responsive.
-    private func classifyBatches() async {
-        while hasMoreToScan {
-            if Task.isCancelled { return }
-            if bufferFull { break }
-
-            let start = classifiedCount
-            let end = min(start + batchSize, candidates.count)
-            let batchIDs = candidates[start..<end].map(\.id)
-            let convertible = await scanner.convertibleItems(in: batchIDs)
-            if Task.isCancelled { return }
-            // Preserve window order: `convertibleItems` returns them keyed, we
-            // append in candidate order.
-            let byID = Dictionary(convertible.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-            // Guard against a duplicate id ever reaching `items` (which would
-            // make the grid's ForEach ids non-unique → "ID used by multiple
-            // child views"). Cheap set membership check against what's shown.
-            var shownIDs = Set(items.map(\.id))
-            for id in batchIDs {
-                if let item = byID[id], shownIDs.insert(id).inserted { items.append(item) }
-            }
-            classifiedCount = end
-            await Task.yield()
-        }
-    }
-
-    /// Called when the direction/start-date controls change. Restarts the view
-    /// (clears the grid, re-populates from the new window front) while keeping
-    /// the fetched candidate set for reuse; a debounced task prunes if needed.
-    func applyScanSettings() {
-        // While the initial fetch is running there's nothing to re-window, and
-        // cancelling it would leave the list empty. The fetch picks up the
-        // current settings when it lands.
-        guard !fetchingCandidates else { return }
-        let newDirection = scanDirectionSetting
-        let newStart = scanStartDateSetting
-        guard newDirection != lastScanDirection || newStart != lastScanStartDate else { return }
-        lastScanDirection = newDirection
-        lastScanStartDate = newStart
-
-        scanTask?.cancel()
-        // Re-window from the FULL fetched candidate set (not the previously
-        // windowed subset) so widening the window brings items back. Rebuild
-        // from the front.
-        candidates = SequenceGrouping.scanOrdered(
-            allCandidates, direction: newDirection, startDate: newStart
-        )
-        items = []
-        classifiedCount = 0
-        scanAheadOf = 0
-        scrollAnchorID = nil
-        isScanning = true
-        scanTask = Task {
-            await classifyBatches()
-            if !Task.isCancelled { isScanning = false }
-        }
-    }
-
-    deinit { PHPhotoLibrary.shared().unregisterChangeObserver(self) }
-
-    nonisolated func photoLibraryDidChange(_ changeInstance: PHChange) {
-        // PhotoKit delivers this on a background thread; do all work on the main
-        // actor. A converted/added/deleted photo changes the candidate set, so
-        // reconcile incrementally rather than resetting the grid.
-        Task { @MainActor [weak self] in await self?.syncLibrary() }
-    }
-
-    /// Incrementally reconcile the grid with the current library — used on
-    /// library changes and scene-activation — WITHOUT resetting scroll. Fetches
-    /// the candidate set fresh, then adds/removes items in place:
-    /// - removed candidates drop out of `items`/`candidates`/`allCandidates`
-    /// - added candidates are appended to the unclassified tail so scanMore
-    ///   reaches them; any already inside the classified window are classified
-    ///   now and inserted in window order.
-    func syncLibrary() async {
-        authorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
-        guard canRead else { items = []; hasScanned = false; return }
-        // If we never scanned, a plain scan is correct (nothing to preserve).
-        guard hasScanned, !isScanning else { if !hasScanned { scan() }; return }
-
-        let found = await scanner.fetchCandidates()
-        let oldIDs = Set(allCandidates.map(\.id))
-        let newIDs = Set(found.map(\.id))
-        let added = newIDs.subtracting(oldIDs)
-        let removed = oldIDs.subtracting(newIDs)
-        guard !added.isEmpty || !removed.isEmpty else { return }
-
-        allCandidates = found
-
-        // Remove dropped photos everywhere. Preserves scroll: SwiftUI keeps the
-        // remaining rows in place rather than resetting.
-        if !removed.isEmpty {
-            items.removeAll { removed.contains($0.id) }
-        }
-
-        // Rebuild the windowed candidate list from the fresh set, then figure
-        // out how far we'd classified (by matching already-shown items).
-        let shownIDs = Set(items.map(\.id))
-        candidates = SequenceGrouping.scanOrdered(
-            found, direction: scanDirectionSetting, startDate: scanStartDateSetting
-        )
-        // The classified frontier is the furthest candidate index whose id is
-        // already shown; anything added at or before it should be classified now.
-        let frontier = candidates.lastIndex { shownIDs.contains($0.id) }
-        classifiedCount = (frontier ?? -1) + 1
-
-        // Classify any added candidates that fall within the frontier and insert
-        // them in window order. Added photos beyond the frontier stay in the
-        // unclassified tail for scanMore.
-        let addedInside = added.isEmpty ? [] : candidates.prefix(classifiedCount).map(\.id).filter { added.contains($0) }
-        if !addedInside.isEmpty {
-            let newItems = await scanner.convertibleItems(in: addedInside)
-            let convertibleAdded = Set(newItems.map(\.id))
-            // Rebuild `items` in window order over the classified prefix so the
-            // new ones land in their correct position (not at the end).
-            let itemByID = Dictionary(
-                (items + newItems).map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a }
-            )
-            var rebuilt: [LivePhotoItem] = []
-            for cand in candidates.prefix(classifiedCount) {
-                if shownIDs.contains(cand.id) || convertibleAdded.contains(cand.id),
-                   let item = itemByID[cand.id] {
-                    rebuilt.append(item)
-                }
-            }
-            items = rebuilt
-        }
+    override func classify(_ batch: [TimedPhoto]) async -> [LivePhotoItem] {
+        await scanner.convertibleItems(in: batch.map(\.id))
     }
 
     /// Convert a set of Live Photos to stills.
@@ -336,7 +57,7 @@ final class LiveToStillModel: NSObject, PHPhotoLibraryChangeObserver {
     /// Returns the number converted.
     @discardableResult
     func convertToStill(_ identifiers: Set<String>) async throws -> Int {
-        guard authorization == .authorized || authorization == .limited else {
+        guard canRead else {
             throw LiveToStillError.writeAccessRequired
         }
 
@@ -354,7 +75,7 @@ final class LiveToStillModel: NSObject, PHPhotoLibraryChangeObserver {
 
         // Drop converted originals from the visible list.
         let convertedIDs = Set(jobs.map { $0.asset.localIdentifier })
-        items.removeAll { convertedIDs.contains($0.id) }
+        removeFromCurrentResults(convertedIDs)
         return jobs.count
     }
 
