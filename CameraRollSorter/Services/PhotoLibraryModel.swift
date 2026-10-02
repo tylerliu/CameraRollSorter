@@ -79,8 +79,9 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
     // scan direction reverses this (the visible list reverses) while continued
     // scanning keeps appending to the end.
     private var scanProgression: [String] = []
-    // Furthest group row the viewer has reached. The scan keeps ~targetGroupCount
-    // groups scanned ahead of this, so the buffer rolls forward as you scroll.
+    // Bottom-most group row currently on screen. The scan keeps ~targetGroupCount
+    // groups scanned ahead of it, so the buffer rolls forward as you scroll down
+    // and the scan pauses (after the photo in flight) when you scroll back up.
     private var scanAheadOf = 0
     // Top-visible group id, so the Similar list restores scroll position when
     // navigating away and back within a session. Not persisted across launches.
@@ -239,13 +240,19 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
 
     /// Keep the scanned list filled to ~`targetGroupCount` groups AHEAD of the
     /// row the user is viewing (a rolling window, not a hard total cap). Called
-    /// as rows appear. No-op while a batch is already running or nothing
-    /// remains. `currentIndex` is the group row that triggered this.
-    func scanMore(currentIndex: Int = 0) {
-        // Track the furthest-viewed position so an in-flight scan loop extends
-        // its buffer target as the user scrolls (rather than stopping short).
-        scanAheadOf = max(scanAheadOf, currentIndex)
-        guard canRead, hasMoreToScan, !isScanning else { return }
+    /// as rows appear and disappear with the bottom-most visible row (or the
+    /// group count when the list's end is visible). Moving down can resume a
+    /// paused scan; moving up lowers the target, so a running scan pauses at its
+    /// next progress check.
+    func scanMore(currentIndex: Int) {
+        scanAheadOf = currentIndex
+        resumeIfNeeded()
+    }
+
+    /// Start scanning if the buffer ahead of the viewer isn't full and nothing
+    /// is running.
+    private func resumeIfNeeded() {
+        guard canRead, hasMoreToScan, !isScanning, !bufferFull else { return }
         isScanning = true
         let token = revision
         scanTask = Task {
@@ -261,21 +268,37 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
     /// so scanning resumes to fill it; closing it just stops growing the buffer.
     func setListActive(_ active: Bool) {
         listActive = active
-        if active { scanMore() }
+        if active { resumeIfNeeded() }
+    }
+
+    // True while another cleanup feature's screen is open, so this scan
+    // doesn't compete with it for Vision time. Set by the home screen.
+    private var isPaused = false
+
+    /// Pause (after the photo in flight) or resume this scan.
+    func setPaused(_ paused: Bool) {
+        guard paused != isPaused else { return }
+        isPaused = paused
+        if !paused { resumeIfNeeded() }
+    }
+
+    /// True when the scan should stop: paused, or enough groups buffered ahead
+    /// of the viewer (the small preview cap until the list is open, then the
+    /// full buffer).
+    private var bufferFull: Bool {
+        isPaused || groups.count - scanAheadOf >= ScanBuffer.effectiveTarget(listActive: listActive)
     }
 
     /// Measure successive `batchSize` slices of `sortedPhotos`, appending pairs
     /// and regrouping after each. Stops when the library is exhausted or once
     /// there are `targetGroupCount` groups AHEAD of the viewer's position
-    /// (`scanAheadOf`, updated live by `scanMore` as the list scrolls) — a
-    /// rolling buffer, not a hard total cap.
+    /// (`scanAheadOf`, updated live by `scanMore` as the list scrolls either
+    /// way) — a rolling buffer, not a hard total cap.
     private func runBatches() async {
         let token = revision
         while hasMoreToScan {
             if Task.isCancelled || revision != token { return }
-            // Enough buffer ahead of the current position → pause. Uses the
-            // small preview cap until the list is open, then the full buffer.
-            if groups.count - scanAheadOf >= ScanBuffer.effectiveTarget(listActive: listActive) { break }
+            if bufferFull { break }
 
             // Next batch: the first `batchSize` still-unscanned photos in scan
             // order, walking forward from the cursor (everything before it is
@@ -316,8 +339,9 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
                     // constantly.
                     self.publishGroupsThrottled()
                     // Stop mid-batch once the buffer ahead of the viewer is
-                    // full; unfinished anchors stay unscanned for later.
-                    return self.groups.count - self.scanAheadOf < ScanBuffer.effectiveTarget(listActive: self.listActive)
+                    // full or the scan is paused; unfinished anchors stay
+                    // unscanned for later.
+                    return !self.bufferFull
                 }
                 guard revision == token, !Task.isCancelled else { isScanningBatch = false; return }
                 // Every pair was already streamed through progress; this is a
@@ -496,14 +520,7 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
 
         // Threshold / group-target change only: regroup, resume if below buffer.
         applyThreshold()
-        if hasMoreToScan, groups.count < ScanBuffer.effectiveTarget(listActive: listActive), !isScanning {
-            isScanning = true
-            let token = revision
-            scanTask = Task {
-                await runBatches()
-                if revision == token { isScanning = false }
-            }
-        }
+        resumeIfNeeded()
     }
 
     /// Re-populate the view for a new scan window. Clears the displayed

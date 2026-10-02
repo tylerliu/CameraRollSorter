@@ -5,6 +5,12 @@ import SwiftUI
 /// can measure the finger's distance to the viewport edges. Shared by every
 /// screen that renders `PhotoSelectionGrid` (Live → Still, Blurry photos, …);
 /// previously a private copy lived in `LiveToStillView`.
+/// Latest cell frames for drag-select hit-testing. A plain class (not
+/// observed) so updating it on every scroll frame doesn't re-render the grid.
+final class CellFrameStore {
+    var frames: [String: CGRect] = [:]
+}
+
 struct CellFramePreferenceKey: PreferenceKey {
     static let defaultValue: [String: CGRect] = [:]
     static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
@@ -45,7 +51,8 @@ struct PhotoSelectionGrid<ActionBar: View>: View {
     let isScanning: Bool
     let hasScanned: Bool
     let hasMoreToScan: Bool
-    /// Keep a rolling buffer classified ahead of the viewed row.
+    /// Report the viewer's position (bottom-most visible index; can move either
+    /// way) so the host keeps a rolling buffer classified ahead of it.
     let scanMore: (Int) -> Void
     /// Re-window/rebuild when a scan control changes.
     let applyScanSettings: () -> Void
@@ -76,8 +83,11 @@ struct PhotoSelectionGrid<ActionBar: View>: View {
 
     // Frames of each cell in GLOBAL space, keyed by id, so a drag in select
     // mode can hit-test which cell is under the finger. Only used while
-    // `isSelecting`.
-    @State private var cellFrames: [String: CGRect] = [:]
+    // `isSelecting`. Kept in a plain reference box, not observed state: the
+    // frames change on every scroll frame, and storing them in @State
+    // re-rendered the grid each time ("Bound preference … tried to update
+    // multiple times per frame"). Only the drag gesture reads them.
+    @State private var cellFrameStore = CellFrameStore()
     // Rubber-band drag state (Photos-style): the drag applies one action to
     // EVERY item between the start cell and the current cell (by index order),
     // so dragging down covers whole rows. `dragBaseSelection` snapshots the
@@ -104,6 +114,23 @@ struct PhotoSelectionGrid<ActionBar: View>: View {
     private let edgeMargin: CGFloat = 70
 
     @State private var scrollTracker = ScrollAnchorTracker()
+    // Whether the bottom "Finding more…" row is on screen (the viewer is at
+    // the end of the grid).
+    @State private var endRowVisible = false
+
+    /// Tell the scan where the viewer is now: the bottom-most visible cell, or
+    /// the end of the grid while the bottom status row is showing. Scrolling
+    /// back up lowers this, so the scan pauses instead of filling a buffer
+    /// below cells the viewer has left. When nothing is visible (the grid is
+    /// going away, or mid-fling) the last real position is kept, since the
+    /// grid restores to it on return.
+    private func reportViewPosition() {
+        if endRowVisible {
+            scanMore(ids.count)
+        } else if let bottom = scrollTracker.maxVisibleIndex {
+            scanMore(bottom)
+        }
+    }
 
     private let columns = [GridItem(.adaptive(minimum: 110), spacing: 3)]
 
@@ -187,31 +214,40 @@ struct PhotoSelectionGrid<ActionBar: View>: View {
     private var grid: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVGrid(columns: columns, spacing: 3) {
-                    ForEach(Array(ids.enumerated()), id: \.element) { index, id in
-                        cell(for: id).id(id)
-                            // Keep a rolling buffer classified ahead of the row
-                            // being viewed, and track the topmost visible cell so
-                            // scroll position survives navigation.
-                            .onAppear {
-                                scanMore(index)
-                                scrollTracker.onRowAppear(index)
-                                updateAnchor()
-                            }
-                            .onDisappear {
-                                scrollTracker.onRowDisappear(index)
-                                updateAnchor()
-                            }
+                // Lazy outer stack so the bottom status row's onAppear/
+                // onDisappear fire when it actually scrolls on/off screen. In a
+                // plain ScrollView body they fire when the view is built, which
+                // made the scan think the viewer was always at the end.
+                LazyVStack(spacing: 0) {
+                    LazyVGrid(columns: columns, spacing: 3) {
+                        ForEach(Array(ids.enumerated()), id: \.element) { index, id in
+                            cell(for: id).id(id)
+                                // Report the viewer's position so the scan keeps
+                                // a rolling buffer ahead of it, and track the
+                                // topmost visible cell so scroll position
+                                // survives navigation.
+                                .onAppear {
+                                    scrollTracker.onRowAppear(index)
+                                    updateAnchor()
+                                    reportViewPosition()
+                                }
+                                .onDisappear {
+                                    scrollTracker.onRowDisappear(index)
+                                    updateAnchor()
+                                    reportViewPosition()
+                                }
+                        }
                     }
-                }
-                .padding(3)
+                    .padding(3)
 
-                // Auto-continue classifying when more remains and the bottom is
-                // reached.
-                if hasMoreToScan {
-                    HStack { ProgressView(); Text("Finding more…").font(.caption).foregroundStyle(.secondary) }
-                        .padding(.vertical, 8)
-                        .onAppear { scanMore(ids.count) }
+                    // Auto-continue classifying when more remains and the
+                    // bottom is reached.
+                    if hasMoreToScan {
+                        HStack { ProgressView(); Text("Finding more…").font(.caption).foregroundStyle(.secondary) }
+                            .padding(.vertical, 8)
+                            .onAppear { endRowVisible = true; reportViewPosition() }
+                            .onDisappear { endRowVisible = false; reportViewPosition() }
+                    }
                 }
             }
             // Lock the ScrollView the instant a drag is judged a paint, so the
@@ -227,7 +263,9 @@ struct PhotoSelectionGrid<ActionBar: View>: View {
                 }
             )
             // Collect visible cell frames (global space) for drag hit-testing.
-            .onPreferenceChange(CellFramePreferenceKey.self) { cellFrames = $0 }
+            .onPreferenceChange(CellFramePreferenceKey.self) { [cellFrameStore] frames in
+                cellFrameStore.frames = frames
+            }
             // Drag-to-paint selection while selecting, as a SIMULTANEOUS gesture
             // so a vertical drag still scrolls. On the first move we judge the
             // direction: a horizontal/diagonal drag is a paint → we lock the
@@ -394,7 +432,7 @@ struct PhotoSelectionGrid<ActionBar: View>: View {
     /// The index in `ids` of the cell under `point` (global space), or nil if
     /// the point isn't over a known (visible) cell.
     private func itemIndex(at point: CGPoint) -> Int? {
-        guard let id = cellFrames.first(where: { $0.value.contains(point) })?.key else { return nil }
+        guard let id = cellFrameStore.frames.first(where: { $0.value.contains(point) })?.key else { return nil }
         return ids.firstIndex(of: id)
     }
 

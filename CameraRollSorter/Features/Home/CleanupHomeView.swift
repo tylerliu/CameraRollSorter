@@ -65,6 +65,7 @@ struct CleanupHomeView: View {
             Section("Cleanup") {
                 NavigationLink {
                     SimilarPhotosView(library: library)
+                        .onAppear { focus(.similar) }
                 } label: {
                     CategoryRow(
                         title: "Similar photos",
@@ -74,6 +75,7 @@ struct CleanupHomeView: View {
                 }
                 NavigationLink {
                     LiveToStillView(model: liveToStill)
+                        .onAppear { focus(.liveToStill) }
                 } label: {
                     CategoryRow(
                         title: "Live → Still",
@@ -83,6 +85,7 @@ struct CleanupHomeView: View {
                 }
                 NavigationLink {
                     BlurryPhotosView(model: blurry)
+                        .onAppear { focus(.blurry) }
                 } label: {
                     CategoryRow(
                         title: "Low-aesthetic",
@@ -92,6 +95,21 @@ struct CleanupHomeView: View {
                 }
             }
         }
+        // Back on the home screen: every feature fills its preview buffer again.
+        .onAppear { focus(nil) }
+    }
+
+    private enum Feature { case similar, liveToStill, blurry }
+
+    /// Only the open feature scans; the others pause (after the work in flight)
+    /// so they don't compete for Vision time. `nil` = the home screen, where all
+    /// three fill their small preview buffers. Deeper screens inside a feature
+    /// (e.g. a group's chooser) keep the others paused, since only returning
+    /// home calls this with nil.
+    private func focus(_ feature: Feature?) {
+        library.setPaused(feature != nil && feature != .similar)
+        liveToStill.setPaused(feature != nil && feature != .liveToStill)
+        blurry.setPaused(feature != nil && feature != .blurry)
     }
 
     /// Subtitle for the Live → Still row: scan progress or a live count with

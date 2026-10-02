@@ -8,6 +8,9 @@ struct SimilarPhotosView: View {
     @Bindable var library: PhotoLibraryModel
 
     @State private var scrollTracker = ScrollAnchorTracker()
+    // Whether the bottom "Scanning more…" row is on screen (the viewer is at
+    // the end of the list).
+    @State private var endRowVisible = false
 
     /// Row date label: month/day and time, adding the year only when the photo
     /// isn't from the current year.
@@ -25,6 +28,20 @@ struct SimilarPhotosView: View {
     private func updateAnchor() {
         guard let top = scrollTracker.topVisibleIndexForAnchor, library.groups.indices.contains(top) else { return }
         library.scrollAnchorID = library.groups[top].id
+    }
+
+    /// Tell the scan where the viewer is now: the bottom-most visible row, or
+    /// the end of the list while the bottom status row is showing. Scrolling
+    /// back up lowers this, so the scan pauses instead of filling a buffer
+    /// below rows the viewer has left. When nothing is visible (the list is
+    /// going away, or mid-fling) the last real position is kept, since the
+    /// list restores to it on return.
+    private func reportViewPosition() {
+        if endRowVisible {
+            library.scanMore(currentIndex: library.groups.count)
+        } else if let bottom = scrollTracker.maxVisibleIndex {
+            library.scanMore(currentIndex: bottom)
+        }
     }
 
     /// The current number of groups, updated as the scan progresses.
@@ -107,13 +124,14 @@ struct SimilarPhotosView: View {
                         // and track which rows are on screen so we can remember
                         // the topmost one across navigation.
                         .onAppear {
-                            library.scanMore(currentIndex: index)
                             scrollTracker.onRowAppear(index)
                             updateAnchor()
+                            reportViewPosition()
                         }
                         .onDisappear {
                             scrollTracker.onRowDisappear(index)
                             updateAnchor()
+                            reportViewPosition()
                         }
                     }
                 }
@@ -123,7 +141,8 @@ struct SimilarPhotosView: View {
                 // scan, so there's no manual "scan more" step.
                 if library.hasMoreToScan {
                     HStack { ProgressView(); Text("Scanning more…").font(.caption).foregroundStyle(.secondary) }
-                        .onAppear { library.scanMore(currentIndex: library.groups.count) }
+                        .onAppear { endRowVisible = true; reportViewPosition() }
+                        .onDisappear { endRowVisible = false; reportViewPosition() }
                 }
             }
         }

@@ -136,8 +136,10 @@ final class BlurryPhotosModel: NSObject, PHPhotoLibraryChangeObserver {
     // Fewer per batch than Live→Still: each item does an image decode + a
     // Vision aesthetics request, so smaller batches keep the UI responsive.
     private let batchSize = 120                  // candidates classified per step
-    // Furthest grid row the viewer reached; the scan keeps `ScanBuffer.target`
-    // items classified ahead of it (a shared, settings-driven buffer).
+    // Bottom-most grid row currently on screen; the scan keeps
+    // `ScanBuffer.target` items classified ahead of it (a shared,
+    // settings-driven buffer), and pauses after the batch in flight when the
+    // viewer scrolls back up.
     private var scanAheadOf = 0
     private var lastScanDirection: ScanDirection = .newer
     private var lastScanStartDate: Date?
@@ -236,9 +238,17 @@ final class BlurryPhotosModel: NSObject, PHPhotoLibraryChangeObserver {
     }
 
     /// Classify the next unclassified candidates on demand as the grid scrolls.
-    func scanMore(currentIndex: Int = 0) {
-        scanAheadOf = max(scanAheadOf, currentIndex)
-        guard canRead, hasMoreToScan, !isScanning else { return }
+    /// `currentIndex` is the bottom-most visible row (or the item count when the
+    /// grid's end is visible); it can move either way.
+    func scanMore(currentIndex: Int) {
+        scanAheadOf = currentIndex
+        resumeIfNeeded()
+    }
+
+    /// Start classifying if the buffer ahead of the viewer isn't full and
+    /// nothing is running.
+    private func resumeIfNeeded() {
+        guard canRead, hasMoreToScan, !isScanning, !bufferFull else { return }
         isScanning = true
         scanTask = Task {
             await classifyBatches()
@@ -250,7 +260,24 @@ final class BlurryPhotosModel: NSObject, PHPhotoLibraryChangeObserver {
     /// the home-screen preview cap to the full one, resuming classification.
     func setListActive(_ active: Bool) {
         listActive = active
-        if active { scanMore() }
+        if active { resumeIfNeeded() }
+    }
+
+    // True while another cleanup feature's screen is open, so this scan
+    // doesn't compete with it for Vision time. Set by the home screen.
+    private var isPaused = false
+
+    /// Pause (after the batch in flight) or resume this scan.
+    func setPaused(_ paused: Bool) {
+        guard paused != isPaused else { return }
+        isPaused = paused
+        if !paused { resumeIfNeeded() }
+    }
+
+    /// True when classification should stop: paused, or enough items buffered
+    /// ahead of the viewer.
+    private var bufferFull: Bool {
+        isPaused || items.count - scanAheadOf >= ScanBuffer.effectiveTarget(listActive: listActive)
     }
 
     /// Classify successive `batchSize` slices of `candidates`, appending the
@@ -260,7 +287,7 @@ final class BlurryPhotosModel: NSObject, PHPhotoLibraryChangeObserver {
     private func classifyBatches() async {
         while hasMoreToScan {
             if Task.isCancelled { return }
-            if items.count - scanAheadOf >= ScanBuffer.effectiveTarget(listActive: listActive) { break }
+            if bufferFull { break }
 
             let start = classifiedCount
             let end = min(start + batchSize, candidates.count)
