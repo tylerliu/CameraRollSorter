@@ -41,16 +41,22 @@ struct PhotoDetailPager: View {
         NavigationStack {
             TabView(selection: selectionBinding) {
                 ForEach(identifiers, id: \.self) { id in
-                    ZoomablePhotoView(
-                        identifier: id,
-                        isZoomed: $isZoomed,
-                        onSwipeUp: { infoID = id }
-                    )
+                    Group {
+                        #if os(iOS)
+                        ZoomablePhotoView(
+                            identifier: id,
+                            isZoomed: $isZoomed,
+                            onSwipeUp: { infoID = id }
+                        )
+                        #else
+                        PhotoPreviewView(identifier: id)
+                        #endif
+                    }
                     .tag(id)
                     .ignoresSafeArea(edges: .bottom)
                 }
             }
-            .tabViewStyle(.page(indexDisplayMode: identifiers.count > 1 ? .automatic : .never))
+            .pagedTabViewStyle(showsIndex: identifiers.count > 1)
             .background(Color.black.ignoresSafeArea())
             .safeAreaInset(edge: .bottom) {
                 // Nearest-in-time neighbors for the current photo. Hidden while
@@ -61,7 +67,7 @@ struct PhotoDetailPager: View {
                 }
             }
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
+                ToolbarItem(placement: .platformLeading) {
                     Button("Done") { dismiss() }
                 }
                 ToolbarItem(placement: .principal) {
@@ -71,11 +77,11 @@ struct PhotoDetailPager: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .platformTrailing) {
                     if selection != nil { selectionToggle }
                 }
             }
-            .toolbarBackground(.visible, for: .navigationBar)
+            .visibleNavigationBarBackground()
             .sheet(isPresented: infoPresented) {
                 if let infoID {
                     PhotoInfoView(identifier: infoID)
@@ -140,7 +146,7 @@ struct PhotoDetailPager: View {
 private struct PeekOverlay: View {
     let identifier: String
 
-    @State private var image: UIImage?
+    @State private var image: PlatformImage?
     @State private var request: PHImageRequestID?
 
     var body: some View {
@@ -154,7 +160,7 @@ private struct PeekOverlay: View {
 
                 Group {
                     if let image {
-                        Image(uiImage: image)
+                        Image(platformImage: image)
                             .resizable()
                             .aspectRatio(contentMode: .fit)
                             // Fix the width; height follows the photo's aspect

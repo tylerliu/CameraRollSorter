@@ -1,3 +1,4 @@
+#if os(iOS)
 import PhotosUI
 import SwiftUI
 
@@ -50,3 +51,4 @@ struct LimitedLibraryPicker: UIViewControllerRepresentable {
         }
     }
 }
+#endif

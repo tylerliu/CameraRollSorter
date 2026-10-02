@@ -147,27 +147,27 @@ struct PhotoSelectionGrid<ActionBar: View>: View {
             content
         }
         .navigationTitle(navigationTitle)
-        .navigationBarTitleDisplayMode(.inline)
+        .inlineNavigationTitle()
         .toolbar {
             if isSelecting {
-                ToolbarItem(placement: .topBarLeading) {
+                ToolbarItem(placement: .platformLeading) {
                     Button("Select All") { selection = PhotoSelectionLogic.selectAll(ids: ids) }
                         .disabled(ids.isEmpty)
                 }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .platformTrailing) {
                     // Exit select mode but KEEP the selection so it can still be
                     // acted on (the tick stays visible in normal mode).
                     Button("Done") { isSelecting = false }
                 }
             } else {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .platformTrailing) {
                     Button("Select") { isSelecting = true }
                         .disabled(ids.isEmpty)
                 }
             }
         }
         .safeAreaInset(edge: .bottom) { actionBar(isSelecting) }
-        .fullScreenCover(isPresented: detailPresented) {
+        .platformFullScreenCover(isPresented: detailPresented) {
             PhotoDetailPager(
                 identifiers: ids,
                 currentID: $detailID,

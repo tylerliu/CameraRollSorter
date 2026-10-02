@@ -1,5 +1,4 @@
 import Photos
-import UIKit
 import Vision
 
 struct AestheticsResult: Sendable {
@@ -52,7 +51,7 @@ actor AestheticsScorer {
     @available(iOS 18.0, *)
     private func scoreOne(_ identifier: String) -> Outcome {
         autoreleasepool {
-            guard let cgImage = PhotoImageLoading.synchronousImage(for: identifier, targetSize: 512)?.cgImage else {
+            guard let cgImage = PhotoImageLoading.synchronousImage(for: identifier, targetSize: 512)?.platformCGImage else {
                 return .failed
             }
             do {

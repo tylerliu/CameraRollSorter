@@ -1,5 +1,4 @@
 import Photos
-import UIKit
 
 /// Shared PhotoKit helpers used by the background analysis actors
 /// (`SimilarityAnalyzer`, `AestheticsScorer`). Kept nonisolated and synchronous
@@ -12,7 +11,7 @@ nonisolated enum PhotoImageLoading {
     ///
     /// This is the exact request configuration both analysis actors relied on:
     /// synchronous, no network, high quality, exact resize.
-    static func synchronousImage(for identifier: String, targetSize: CGFloat) -> UIImage? {
+    static func synchronousImage(for identifier: String, targetSize: CGFloat) -> PlatformImage? {
         guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil).firstObject else {
             return nil
         }
@@ -23,7 +22,7 @@ nonisolated enum PhotoImageLoading {
         options.resizeMode = .exact
         options.version = .current
 
-        var loaded: UIImage?
+        var loaded: PlatformImage?
         PHImageManager.default().requestImage(
             for: asset,
             targetSize: CGSize(width: targetSize, height: targetSize),

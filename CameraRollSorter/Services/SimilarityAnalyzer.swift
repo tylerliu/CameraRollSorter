@@ -1,5 +1,4 @@
 import Photos
-import UIKit
 import Vision
 
 struct SimilarityResult: Sendable {
@@ -44,13 +43,9 @@ actor SimilarityAnalyzer {
     private func featurePrint(_ identifier: String) throws -> VNFeaturePrintObservation? {
         return try autoreleasepool {
                 guard let loaded = PhotoImageLoading.synchronousImage(for: identifier, targetSize: 512) else { return nil }
-                // Render once to normalize UIImage orientation without cropping.
-                let format = UIGraphicsImageRendererFormat()
-                format.scale = 1
-                let normalized = UIGraphicsImageRenderer(size: loaded.size, format: format).image { _ in
-                    loaded.draw(in: CGRect(origin: .zero, size: loaded.size))
-                }
-                guard let cgImage = normalized.cgImage else { return nil }
+                // Normalize orientation without cropping (on iOS this is the
+                // same UIGraphicsImageRenderer pass as before; see PlatformImage).
+                guard let cgImage = loaded.orientationNormalizedCGImage else { return nil }
                 return try FeaturePrintGenerator.observation(for: cgImage)
             }
     }

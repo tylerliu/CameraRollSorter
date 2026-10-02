@@ -11,9 +11,9 @@ struct PhotoThumbnail: View {
     var cornerRadius: CGFloat = 8
     /// Called on the main actor whenever a non-degraded image is successfully loaded.
     /// The filmstrip and chooser use this to avoid a blank flash when switching photos.
-    var onImageLoaded: (@MainActor (UIImage) -> Void)? = nil
+    var onImageLoaded: (@MainActor (PlatformImage) -> Void)? = nil
 
-    @State private var image: UIImage?
+    @State private var image: PlatformImage?
     @State private var request: PHImageRequestID?
     @State private var generation = UUID()
     @State private var finished = false
@@ -23,9 +23,9 @@ struct PhotoThumbnail: View {
             Color.secondary.opacity(0.08)
             if let image {
                 if fill {
-                    Image(uiImage: image).resizable().scaledToFill()
+                    Image(platformImage: image).resizable().scaledToFill()
                 } else {
-                    Image(uiImage: image).resizable().scaledToFit()
+                    Image(platformImage: image).resizable().scaledToFit()
                 }
             } else if finished {
                 Image(systemName: "icloud.slash").foregroundStyle(.secondary)

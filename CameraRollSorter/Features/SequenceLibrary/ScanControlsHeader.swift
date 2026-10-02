@@ -193,7 +193,7 @@ struct ScanControlsHeader: View {
                     }
                 }
                 .labelsHidden()
-                .datePickerStyle(.wheel)
+                .wheelDatePickerStyle()
             }
         }
         .padding(.horizontal)

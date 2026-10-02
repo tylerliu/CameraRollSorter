@@ -69,7 +69,7 @@ struct SimilarPhotosView: View {
             list
         }
         .navigationTitle("Similar photos")
-        .navigationBarTitleDisplayMode(.inline)
+        .inlineNavigationTitle()
     }
 
     private var list: some View {

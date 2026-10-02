@@ -21,7 +21,7 @@ struct CleanupHomeView: View {
             }
             .navigationTitle("Camera Roll Sorter")
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .platformTrailing) {
                     Button("Review settings", systemImage: "slider.horizontal.3") { showsSettings = true }
                 }
             }
@@ -33,6 +33,7 @@ struct CleanupHomeView: View {
             } content: {
                 ReviewSettingsView()
             }
+            #if os(iOS)
             .background {
                 LimitedLibraryPicker(isPresented: $showsLimitedPicker) {
                     // Selecting more photos under limited access is an add,
@@ -41,6 +42,7 @@ struct CleanupHomeView: View {
                 }
                 .frame(width: 0, height: 0)
             }
+            #endif
         }
         .task {
             library.refresh()
@@ -176,7 +178,9 @@ struct CleanupHomeView: View {
             )
             if library.authorization == .limited {
                 Text("Results include only the photos you have allowed.")
-                Button("Choose accessible photos") { showsLimitedPicker = true }
+                if PlatformSettings.supportsLimitedLibraryPicker {
+                    Button("Choose accessible photos") { showsLimitedPicker = true }
+                }
             }
             Button("Change access in Settings") { openSettings() }
             Text("Comparisons use local previews only. Nothing is changed unless you confirm an action.")
@@ -207,7 +211,7 @@ struct CleanupHomeView: View {
     }
 
     private func openSettings() {
-        if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
+        if let url = PlatformSettings.photosPrivacyURL { openURL(url) }
     }
 }
 

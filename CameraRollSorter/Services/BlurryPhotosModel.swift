@@ -1,7 +1,6 @@
 import Foundation
 import Observation
 import Photos
-import UIKit
 import Vision
 
 /// A detected low-aesthetic photo. Parallels `LivePhotoItem`; `score` is the
@@ -84,7 +83,7 @@ private actor BlurryPhotoScanner {
         var items: [BlurryPhotoItem] = []
         for candidate in candidates {
             autoreleasepool {
-                guard let cgImage = PhotoImageLoading.synchronousImage(for: candidate.id, targetSize: 512)?.cgImage else { return }
+                guard let cgImage = PhotoImageLoading.synchronousImage(for: candidate.id, targetSize: 512)?.platformCGImage else { return }
                 guard let score = try? AestheticsRequestRunner.score(for: cgImage) else { return }
                 // Non-utility only, and below the low-aesthetic cutoff.
                 guard !score.isUtility, Double(score.overall) < cutoff else { return }

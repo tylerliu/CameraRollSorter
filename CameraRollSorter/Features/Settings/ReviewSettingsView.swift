@@ -98,7 +98,7 @@ struct ReviewSettingsView: View {
                 // controlled in-list), so it needs no section here.
             }
             .navigationTitle("Review settings")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }

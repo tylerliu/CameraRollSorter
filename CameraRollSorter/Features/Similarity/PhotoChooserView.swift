@@ -49,9 +49,9 @@ struct PhotoChooserView: View {
         }
         .safeAreaInset(edge: .bottom) { actionBar }
         .navigationTitle("Choose photos")
-        .navigationBarTitleDisplayMode(.inline)
+        .inlineNavigationTitle()
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItem(placement: .platformTrailing) {
                 // One tap flips the whole group: if nothing's marked yet, mark
                 // all for deletion; otherwise reset to keep everything.
                 if markedForDeletion.isEmpty {
@@ -107,8 +107,14 @@ struct PhotoChooserView: View {
                     let preview = orderedPhotos[min(burstPreviewIndex, orderedPhotos.count - 1)]
                     let kept = keptIDs.contains(preview.id)
 
-                    ZoomablePhotoView(identifier: preview.id, isZoomed: $isPreviewZoomed, onTap: { toggle(preview.id) }) {
-                        infoPhotoID = preview.id
+                    Group {
+                        #if os(iOS)
+                        ZoomablePhotoView(identifier: preview.id, isZoomed: $isPreviewZoomed, onTap: { toggle(preview.id) }) {
+                            infoPhotoID = preview.id
+                        }
+                        #else
+                        PhotoPreviewView(identifier: preview.id, onClick: { toggle(preview.id) })
+                        #endif
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .zIndex(isPreviewZoomed ? 1 : 0)
@@ -140,9 +146,15 @@ struct PhotoChooserView: View {
                             .font(.caption.weight(.medium))
                             .foregroundStyle(.secondary)
                     } else {
-                        Text("Pinch to zoom · tap to toggle · swipe up for info")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        Group {
+                            #if os(iOS)
+                            Text("Pinch to zoom · tap to toggle · swipe up for info")
+                            #else
+                            Text("Click to toggle")
+                            #endif
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     }
                 }
             }

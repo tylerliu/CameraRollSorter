@@ -23,9 +23,9 @@ struct PhotoInfoView: View {
                     ContentUnavailableView("Photo unavailable", systemImage: "photo.badge.exclamationmark")
                 }
             }
-            .listStyle(.insetGrouped)
+            .groupedListStyle()
             .navigationTitle("Info")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
         }
         .task(id: identifier) {
             asset = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil).firstObject
