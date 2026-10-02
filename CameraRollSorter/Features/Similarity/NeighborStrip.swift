@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(macOS)
+import QuickLook
+#endif
 
 /// A fixed, non-scrollable, horizontally-centered row of a photo and its
 /// nearest temporal neighbors — two captured before, the photo itself, then two
@@ -20,6 +23,11 @@ struct NeighborStrip: View {
     @State private var before: [String] = []
     @State private var after: [String] = []
     @State private var loadedFor: String?
+    #if os(macOS)
+    // Quick Look state: the shown file and the strip's files, in strip order.
+    @State private var quickLookURL: URL?
+    @State private var quickLookURLs: [URL] = []
+    #endif
 
     private let thumbSize: CGFloat = 58
 
@@ -38,6 +46,9 @@ struct NeighborStrip: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .task(id: identifier) { load() }
+        #if os(macOS)
+        .quickLookPreview($quickLookURL, in: quickLookURLs)
+        #endif
     }
 
     private func cell(_ id: String, isTarget: Bool) -> some View {
@@ -49,6 +60,13 @@ struct NeighborStrip: View {
                     .stroke(isTarget ? Color.accentColor : .white.opacity(0.15),
                             lineWidth: isTarget ? 2.5 : 0.5)
             )
+            #if os(macOS)
+            // Click opens Quick Look; ← / → in the panel walk the strip.
+            .onTapGesture { openQuickLook(at: id) }
+            .accessibilityLabel(isTarget
+                ? "The photo under review. Click to preview."
+                : "Nearby photo. Click to preview.")
+            #else
             // Touch-down shows the peek; lift (or cancel) hides it. A 0-distance
             // drag is the most reliable "hold to show, release to hide" surface.
             .gesture(
@@ -59,7 +77,28 @@ struct NeighborStrip: View {
             .accessibilityLabel(isTarget
                 ? "The photo under review. Press and hold to preview."
                 : "Nearby photo. Press and hold to preview.")
+            #endif
     }
+
+    #if os(macOS)
+    /// Resolve the strip's photos to their Photos-library files (no copies)
+    /// and open Quick Look on `id`. Photos not on this Mac are skipped.
+    private func openQuickLook(at id: String) {
+        let stripIDs = before + [identifier] + after
+        Task {
+            var urls: [URL] = []
+            var start: URL?
+            for stripID in stripIDs {
+                guard let url = await PhotoFileURL.fullSizeImage(for: stripID) else { continue }
+                urls.append(url)
+                if stripID == id { start = url }
+            }
+            guard let start else { return }
+            quickLookURLs = urls
+            quickLookURL = start
+        }
+    }
+    #endif
 
     private func load() {
         guard loadedFor != identifier else { return }

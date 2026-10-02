@@ -1297,6 +1297,9 @@
         }
       }
     },
+    "Nearby photo. Click to preview." : {
+
+    },
     "Nearby photo. Press and hold to preview." : {
       "localizations" : {
         "zh-Hans" : {
@@ -2291,6 +2294,9 @@
           }
         }
       }
+    },
+    "The photo under review. Click to preview." : {
+
     },
     "The photo under review. Press and hold to preview." : {
       "localizations" : {
