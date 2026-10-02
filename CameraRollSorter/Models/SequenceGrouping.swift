@@ -139,8 +139,22 @@ nonisolated enum SequenceGrouping {
         photos: [TimedPhoto],
         maxMeters: Double
     ) -> [CandidateComparison] {
-        let byID = Dictionary(uniqueKeysWithValues: photos.map { ($0.id, $0) })
-        return comparisons.filter { pair in
+        geoFiltered(
+            comparisons,
+            byID: Dictionary(photos.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a }),
+            maxMeters: maxMeters
+        )
+    }
+
+    /// Same as `geoFiltered(_:photos:maxMeters:)`, but takes a prebuilt id
+    /// lookup so callers that filter every batch don't rebuild a dictionary of
+    /// the whole library each time.
+    static func geoFiltered(
+        _ comparisons: [CandidateComparison],
+        byID: [String: TimedPhoto],
+        maxMeters: Double
+    ) -> [CandidateComparison] {
+        comparisons.filter { pair in
             guard let a = byID[pair.first], let b = byID[pair.second],
                   let aLat = a.latitude, let aLon = a.longitude,
                   let bLat = b.latitude, let bLon = b.longitude else {

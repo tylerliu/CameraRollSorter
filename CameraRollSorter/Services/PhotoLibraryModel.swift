@@ -21,10 +21,20 @@ enum PhotoLibraryDeletionError: LocalizedError {
 final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
     var authorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
     var groups: [PhotoSequence] = []
-    var pairs: [SimilarityPair] = []
+    // Measured pairs (the Vision cache). Only mutated through
+    // `appendMeasuredPairs` / `removePairs` so `measuredComparisons` stays in
+    // sync with it.
+    private(set) var pairs: [SimilarityPair] = []
+    // Keys of every pair in `pairs`, kept alongside it so "already measured?"
+    // and dedup checks are O(1) instead of rebuilding a set of all pairs per
+    // batch.
+    private var measuredComparisons: Set<CandidateComparison> = []
     var analysisError: String?
     var threshold: Float = 0.4
-    private var photos: [TimedPhoto] = []
+    // All accessible photos. The id lookup and date span are derived here once
+    // per change rather than rebuilt on every batch / regroup / header render.
+    private var photos: [TimedPhoto] = [] { didSet { rebuildPhotoIndex() } }
+    private var photosByID: [String: TimedPhoto] = [:]
     private var unavailablePhotoIDs: Set<String> = []
     private let analyzer = SimilarityAnalyzer()
     var isScanning = false
@@ -84,17 +94,64 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
     private var listActive = false
     /// True while a batch is actively measuring (drives the bottom spinner).
     var isScanningBatch = false
+    // Index of the first not-yet-scanned photo in `sortedPhotos`; everything
+    // before it is scanned. Keeps batch selection and `hasMoreToScan` cheap
+    // instead of re-filtering the whole library each time. `runBatches`
+    // advances it; any other change to `sortedPhotos` or `scannedIDs` must call
+    // `resetScanCursor()`.
+    private var scanCursor = 0
     /// True when there are still unscanned photos in the current window.
-    var hasMoreToScan: Bool { sortedPhotos.contains { !scannedIDs.contains($0.id) } }
+    var hasMoreToScan: Bool { scanCursor < sortedPhotos.count }
 
     /// Capture-date span of all accessible photos, or nil before the first scan
     /// / when the library is empty. Used to bound and seed the start-date
-    /// picker so a date with no photos can't be chosen.
-    var libraryDateRange: ClosedRange<Date>? {
-        guard let min = photos.map(\.date).min(), let max = photos.map(\.date).max(), min <= max else {
-            return nil
+    /// picker so a date with no photos can't be chosen. Derived when `photos`
+    /// changes (it's read on every header render).
+    private(set) var libraryDateRange: ClosedRange<Date>?
+
+    /// Rebuild the id lookup and date span after `photos` changes.
+    private func rebuildPhotoIndex() {
+        photosByID = Dictionary(photos.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        var lower: Date?
+        var upper: Date?
+        for photo in photos {
+            if lower == nil || photo.date < lower! { lower = photo.date }
+            if upper == nil || photo.date > upper! { upper = photo.date }
         }
-        return min...max
+        if let lower, let upper { libraryDateRange = lower...upper } else { libraryDateRange = nil }
+    }
+
+    /// Recompute `scanCursor` from scratch. O(photos); only for the rare events
+    /// that rebuild or reshuffle the scan set (rescan, window change, deletion,
+    /// library reconcile).
+    private func resetScanCursor() {
+        scanCursor = sortedPhotos.firstIndex { !scannedIDs.contains($0.id) } ?? sortedPhotos.count
+    }
+
+    /// Move `scanCursor` past photos that are now scanned. Amortized O(1).
+    private func advanceScanCursor() {
+        while scanCursor < sortedPhotos.count, scannedIDs.contains(sortedPhotos[scanCursor].id) {
+            scanCursor += 1
+        }
+    }
+
+    /// Append newly measured pairs, skipping duplicates and pairs whose photos
+    /// are no longer in the library (e.g. deleted mid-batch).
+    private func appendMeasuredPairs(_ newPairs: [SimilarityPair]) {
+        var accepted: [SimilarityPair] = []
+        for pair in newPairs where photosByID[pair.first] != nil && photosByID[pair.second] != nil {
+            if measuredComparisons.insert(CandidateComparison(pair.first, pair.second)).inserted {
+                accepted.append(pair)
+            }
+        }
+        if !accepted.isEmpty { pairs.append(contentsOf: accepted) }
+    }
+
+    /// Remove pairs matching `predicate` and resync the measured-key set.
+    /// O(pairs), but only used on rare events (deletion, prune, reconcile).
+    private func removePairs(where predicate: (SimilarityPair) -> Bool) {
+        pairs.removeAll(where: predicate)
+        measuredComparisons = Set(pairs.map { CandidateComparison($0.first, $0.second) })
     }
 
     var canRead: Bool { authorization == .authorized || authorization == .limited }
@@ -132,6 +189,7 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
         windowPruneTask?.cancel()
         groups = []
         pairs = []
+        measuredComparisons = []
         photos = []
         unavailablePhotoIDs = []
         analysisError = nil
@@ -146,6 +204,7 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
         }
         sortedPhotos = []
         scannedIDs = []
+        scanCursor = 0
         scanProgression = []
         scanAheadOf = 0
         scrollAnchorID = nil
@@ -161,6 +220,7 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
                 startDate: scanStartDateSetting
             )
             scannedIDs = []
+            scanCursor = 0
             scanProgression = []
             // Capture the geo-gate config this scan runs under.
             recordGeoConfig()
@@ -214,35 +274,36 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
             if groups.count - scanAheadOf >= ScanBuffer.effectiveTarget(listActive: listActive) { break }
 
             // Next batch: the first `batchSize` still-unscanned photos in scan
-            // order. Usually a contiguous front run, but after a direction flip
-            // they can be scattered, so select by index explicitly.
-            let batchAnchorIndices = sortedPhotos.indices
-                .filter { !scannedIDs.contains(sortedPhotos[$0].id) }
-                .prefix(batchSize)
+            // order, walking forward from the cursor (everything before it is
+            // scanned). Usually a contiguous run; photos already scanned out of
+            // order (e.g. added inside the window by a reconcile) are skipped.
+            var batchAnchorIndices: [Int] = []
+            var index = scanCursor
+            while index < sortedPhotos.count, batchAnchorIndices.count < batchSize {
+                if !scannedIDs.contains(sortedPhotos[index].id) { batchAnchorIndices.append(index) }
+                index += 1
+            }
             var neighborhoods: [CandidateNeighborhood] = []
             for anchorIndex in batchAnchorIndices {
                 neighborhoods += SequenceGrouping.neighborhoods(in: sortedPhotos, anchorRange: anchorIndex..<(anchorIndex + 1))
             }
-            let batchAnchorIDs = Set(batchAnchorIndices.map { sortedPhotos[$0].id })
+            // Capture anchor IDs (in scan order) BEFORE awaiting Vision: a
+            // deletion during the batch reshuffles `sortedPhotos`, so indices
+            // would be stale afterward.
+            let batchAnchorIDs = batchAnchorIndices.map { sortedPhotos[$0].id }
             // Reuse the measurement cache: skip pairs we already have scores
             // for. After a direction/start change we clear the display but keep
             // `pairs`, so re-covering overlapping photos costs no Vision work.
-            let measured = Set(pairs.map { CandidateComparison($0.first, $0.second) })
             let batchComparisons = geoFilteredComparisons(for: neighborhoods)
-                .filter { !measured.contains($0) }
+                .filter { !measuredComparisons.contains($0) }
 
             isScanningBatch = true
-            // Compute the valid-id set ONCE per batch (not per callback) so
-            // appends stay cheap as pairs grow.
-            let ids = Set(photos.map(\.id))
             do {
                 let scores = try await analyzer.analyzeComparisons(
                     batchComparisons,
                     partialResults: { [self] newPairs in
                         guard self.revision == token else { return }
-                        self.pairs.append(contentsOf: newPairs.filter {
-                            ids.contains($0.first) && ids.contains($0.second)
-                        })
+                        self.appendMeasuredPairs(newPairs)
                         // Regroup at most ~5×/sec during a batch instead of on
                         // every 5-pair callback; a full regroup is O(photos+pairs)
                         // and runs on the main actor, so coalescing avoids the lag.
@@ -250,14 +311,10 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
                     }
                 )
                 guard revision == token, !Task.isCancelled else { isScanningBatch = false; return }
-                // Dedup against pairs already delivered via partialResults using
-                // a Set lookup (was an O(newPairs × pairs) linear scan).
-                var knownPairIDs = Set(pairs.map(\.id))
-                pairs.append(contentsOf: scores.pairs.filter { score in
-                    ids.contains(score.first) && ids.contains(score.second)
-                        && knownPairIDs.insert(score.id).inserted
-                })
-                unavailablePhotoIDs.formUnion(scores.unavailableIDs.intersection(ids))
+                // Every pair was already streamed through partialResults; this
+                // is a cheap dedup'd catch-all.
+                appendMeasuredPairs(scores.pairs)
+                unavailablePhotoIDs.formUnion(scores.unavailableIDs.filter { photosByID[$0] != nil })
             } catch is CancellationError {
                 isScanningBatch = false
                 return
@@ -267,13 +324,13 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
                 return
             }
 
-            // Record scan-progression order (skip any already recorded). Iterate
-            // sortedPhotos so within-batch order follows the scan traversal.
-            for index in batchAnchorIndices {
-                let id = sortedPhotos[index].id
-                if !scannedIDs.contains(id) { scanProgression.append(id) }
+            // Record scan-progression order (skip any already recorded, and any
+            // photo deleted while the batch ran). Within-batch order follows
+            // the scan traversal.
+            for id in batchAnchorIDs where photosByID[id] != nil && scannedIDs.insert(id).inserted {
+                scanProgression.append(id)
             }
-            scannedIDs.formUnion(batchAnchorIDs)
+            advanceScanCursor()
             applyThreshold()
         }
         isScanningBatch = false
@@ -300,7 +357,7 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
         // the back of the list. Only photos actually scanned (in progression)
         // anchor the display — this is what lets a window change CLEAR the view
         // and rebuild from the new front even though `pairs` is still cached.
-        let byID = Dictionary(photos.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let byID = photosByID
         let shown = Set(scanProgression)
         var seen = Set<String>()
         var ordered: [TimedPhoto] = []
@@ -325,7 +382,7 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
         let all = SequenceGrouping.comparisons(groups)
         guard Self.geoGateEnabledSetting else { return all }
         let km = Self.geoGateKilometersSetting
-        return SequenceGrouping.geoFiltered(all, photos: photos, maxMeters: max(0, km) * 1000)
+        return SequenceGrouping.geoFiltered(all, byID: photosByID, maxMeters: max(0, km) * 1000)
     }
 
     /// Snapshot the geo-gate and scan-order config used by the current scan, so
@@ -438,6 +495,7 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
         // View reset: forget what's "shown as scanned" so the display rebuilds
         // from the new front. `pairs` stays as the reuse cache.
         scannedIDs = []
+        scanCursor = 0
         scanProgression = []
         scanAheadOf = 0
         scrollAnchorID = nil
@@ -483,7 +541,7 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
     private func pruneCacheToWindow(direction: ScanDirection, startDate: Date?) {
         guard direction == lastScanDirection, startDate == lastScanStartDate else { return }
         let keepIDs = Set(SequenceGrouping.scanOrdered(photos, direction: direction, startDate: startDate).map(\.id))
-        pairs.removeAll { !keepIDs.contains($0.first) || !keepIDs.contains($0.second) }
+        removePairs { !keepIDs.contains($0.first) || !keepIDs.contains($0.second) }
         unavailablePhotoIDs.formIntersection(keepIDs)
     }
 
@@ -524,12 +582,13 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
     private func removeFromCurrentResults(_ identifiers: Set<String>) {
         guard !identifiers.isEmpty else { return }
         photos.removeAll { identifiers.contains($0.id) }
-        pairs.removeAll { identifiers.contains($0.first) || identifiers.contains($0.second) }
+        removePairs { identifiers.contains($0.first) || identifiers.contains($0.second) }
         unavailablePhotoIDs.subtract(identifiers)
 
         // Drop removed photos from the scan set and ordered arrays.
         sortedPhotos.removeAll { identifiers.contains($0.id) }
         scannedIDs.subtract(identifiers)
+        resetScanCursor()   // indices shifted
         scanProgression.removeAll { identifiers.contains($0) }
 
         // Deletion can only remove edges and split groups — never create a new
@@ -588,10 +647,11 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
         )
         unavailablePhotoIDs.subtract(removed)
         scannedIDs.subtract(removed)
+        resetScanCursor()   // sortedPhotos was rebuilt
 
         // Drop pairs referencing removed photos. (Deletion only removes edges.)
         if !removed.isEmpty {
-            pairs.removeAll { removed.contains($0.first) || removed.contains($0.second) }
+            removePairs { removed.contains($0.first) || removed.contains($0.second) }
         }
 
         // An added photo should be measured now if it lands *within* the region
@@ -629,15 +689,15 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
         // displayed group position is governed by the earliest existing member
         // of whatever component they join, so appending here is fine.
         scannedIDs.formUnion(addedSet)
+        advanceScanCursor()
         for id in addedInsideWindow where !scanProgression.contains(id) { scanProgression.append(id) }
         let anchorIndices = sortedPhotos.indices.filter { addedSet.contains(sortedPhotos[$0].id) }
         var neighborhoods: [CandidateNeighborhood] = []
         for anchorIndex in anchorIndices {
             neighborhoods += SequenceGrouping.neighborhoods(in: sortedPhotos, anchorRange: anchorIndex..<(anchorIndex + 1))
         }
-        let measured = Set(pairs.map { CandidateComparison($0.first, $0.second) })
         let missingComparisons = geoFilteredComparisons(for: neighborhoods)
-            .filter { !measured.contains($0) }
+            .filter { !measuredComparisons.contains($0) }
         guard !missingComparisons.isEmpty else {
             applyThreshold()
             isScanning = false
@@ -649,18 +709,13 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
                 missingComparisons,
                 partialResults: { [weak self] newPairs in
                     guard let self, self.revision == token else { return }
-                    self.pairs.append(contentsOf: newPairs)
+                    self.appendMeasuredPairs(newPairs)
                     self.applyThresholdThrottled()
                 }
             )
             guard revision == token else { return }
-            let currentIDs = Set(photos.map(\.id))
-            var knownPairIDs = Set(pairs.map(\.id))
-            pairs.append(contentsOf: scores.pairs.filter { score in
-                currentIDs.contains(score.first) && currentIDs.contains(score.second)
-                    && knownPairIDs.insert(score.id).inserted
-            })
-            unavailablePhotoIDs.formUnion(scores.unavailableIDs.intersection(currentIDs))
+            appendMeasuredPairs(scores.pairs)
+            unavailablePhotoIDs.formUnion(scores.unavailableIDs.filter { photosByID[$0] != nil })
             applyThreshold()
         } catch is CancellationError {
             return
