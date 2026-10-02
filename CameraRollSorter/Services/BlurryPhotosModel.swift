@@ -120,6 +120,9 @@ final class BlurryPhotosModel: NSObject, PHPhotoLibraryChangeObserver {
 
     private let scanner = BlurryPhotoScanner()
     private var scanTask: Task<Void, Never>?
+    // True while `scan()` is fetching the candidate set. Window changes wait
+    // for it instead of cancelling it.
+    private var fetchingCandidates = false
     private var observing = false
 
     // Incremental scan state. The candidate photos are fetched once (fast,
@@ -206,8 +209,7 @@ final class BlurryPhotosModel: NSObject, PHPhotoLibraryChangeObserver {
         scanAheadOf = 0
         scrollAnchorID = nil
         isScanning = true
-        lastScanDirection = scanDirectionSetting
-        lastScanStartDate = scanStartDateSetting
+        fetchingCandidates = true
         // Capture the cutoff for this scan so a mid-scan settings change is
         // reconciled by applySensitivity() rather than racing classifyBatches().
         activeCutoff = BlurSensitivity.currentCutoff
@@ -217,12 +219,19 @@ final class BlurryPhotosModel: NSObject, PHPhotoLibraryChangeObserver {
             let found = await scanner.fetchCandidates()
             guard !Task.isCancelled else { return }
             allCandidates = found
+            // Window with the settings as of NOW: a window change made during
+            // the fetch is deferred to here (see `applyScanSettings`).
+            lastScanDirection = scanDirectionSetting
+            lastScanStartDate = scanStartDateSetting
             candidates = SequenceGrouping.scanOrdered(
-                found, direction: scanDirectionSetting, startDate: scanStartDateSetting
+                found, direction: lastScanDirection, startDate: lastScanStartDate
             )
+            fetchingCandidates = false
             hasScanned = true
             await classifyBatches()
-            isScanning = false
+            // A cancelled task must not clear the flag for the scan that
+            // replaced it.
+            if !Task.isCancelled { isScanning = false }
         }
     }
 
@@ -233,7 +242,7 @@ final class BlurryPhotosModel: NSObject, PHPhotoLibraryChangeObserver {
         isScanning = true
         scanTask = Task {
             await classifyBatches()
-            isScanning = false
+            if !Task.isCancelled { isScanning = false }
         }
     }
 
@@ -273,6 +282,10 @@ final class BlurryPhotosModel: NSObject, PHPhotoLibraryChangeObserver {
     /// (clears the grid, re-populates from the new window front) while keeping
     /// the fetched candidate set for reuse.
     func applyScanSettings() {
+        // While the initial fetch is running there's nothing to re-window, and
+        // cancelling it would leave the list empty. The fetch picks up the
+        // current settings when it lands.
+        guard !fetchingCandidates else { return }
         let newDirection = scanDirectionSetting
         let newStart = scanStartDateSetting
         guard newDirection != lastScanDirection || newStart != lastScanStartDate else { return }
@@ -293,7 +306,7 @@ final class BlurryPhotosModel: NSObject, PHPhotoLibraryChangeObserver {
         isScanning = true
         scanTask = Task {
             await classifyBatches()
-            isScanning = false
+            if !Task.isCancelled { isScanning = false }
         }
     }
 
@@ -343,7 +356,7 @@ final class BlurryPhotosModel: NSObject, PHPhotoLibraryChangeObserver {
             isScanning = true
             scanTask = Task {
                 await classifyBatches()
-                isScanning = false
+                if !Task.isCancelled { isScanning = false }
             }
         }
     }

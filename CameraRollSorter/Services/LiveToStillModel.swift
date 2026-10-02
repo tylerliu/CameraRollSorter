@@ -40,6 +40,9 @@ final class LiveToStillModel: NSObject, PHPhotoLibraryChangeObserver {
 
     private let scanner = LivePhotoScanner()
     private var scanTask: Task<Void, Never>?
+    // True while `scan()` is fetching the candidate set. Window changes wait
+    // for it instead of cancelling it.
+    private var fetchingCandidates = false
     private var observing = false
 
     // Incremental scan state. The candidate Live Photos are fetched once (fast,
@@ -121,8 +124,7 @@ final class LiveToStillModel: NSObject, PHPhotoLibraryChangeObserver {
         scanAheadOf = 0
         scrollAnchorID = nil
         isScanning = true
-        lastScanDirection = scanDirectionSetting
-        lastScanStartDate = scanStartDateSetting
+        fetchingCandidates = true
         scanTask = Task {
             // Fast metadata-only fetch of every Live Photo candidate. Ordering
             // and classification (Live vs Loop/Bounce/Long) are deferred so
@@ -130,12 +132,19 @@ final class LiveToStillModel: NSObject, PHPhotoLibraryChangeObserver {
             let found = await scanner.fetchCandidates()
             guard !Task.isCancelled else { return }
             allCandidates = found
+            // Window with the settings as of NOW: a window change made during
+            // the fetch is deferred to here (see `applyScanSettings`).
+            lastScanDirection = scanDirectionSetting
+            lastScanStartDate = scanStartDateSetting
             candidates = SequenceGrouping.scanOrdered(
-                found, direction: scanDirectionSetting, startDate: scanStartDateSetting
+                found, direction: lastScanDirection, startDate: lastScanStartDate
             )
+            fetchingCandidates = false
             hasScanned = true
             await classifyBatches()
-            isScanning = false
+            // A cancelled task must not clear the flag for the scan that
+            // replaced it.
+            if !Task.isCancelled { isScanning = false }
         }
     }
 
@@ -146,7 +155,7 @@ final class LiveToStillModel: NSObject, PHPhotoLibraryChangeObserver {
         isScanning = true
         scanTask = Task {
             await classifyBatches()
-            isScanning = false
+            if !Task.isCancelled { isScanning = false }
         }
     }
 
@@ -190,6 +199,10 @@ final class LiveToStillModel: NSObject, PHPhotoLibraryChangeObserver {
     /// (clears the grid, re-populates from the new window front) while keeping
     /// the fetched candidate set for reuse; a debounced task prunes if needed.
     func applyScanSettings() {
+        // While the initial fetch is running there's nothing to re-window, and
+        // cancelling it would leave the list empty. The fetch picks up the
+        // current settings when it lands.
+        guard !fetchingCandidates else { return }
         let newDirection = scanDirectionSetting
         let newStart = scanStartDateSetting
         guard newDirection != lastScanDirection || newStart != lastScanStartDate else { return }
@@ -210,7 +223,7 @@ final class LiveToStillModel: NSObject, PHPhotoLibraryChangeObserver {
         isScanning = true
         scanTask = Task {
             await classifyBatches()
-            isScanning = false
+            if !Task.isCancelled { isScanning = false }
         }
     }
 
