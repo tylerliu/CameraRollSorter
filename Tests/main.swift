@@ -211,3 +211,150 @@ check(boundaryOlder.first == "3", "Start date boundary is inclusive (older)")
 let dirCompNewer = Set(SequenceGrouping.comparisons(SequenceGrouping.neighborhoods(in: SequenceGrouping.scanOrdered(densePhotos, direction: .newer, startDate: nil), anchorRange: nil)))
 let dirCompOlder = Set(SequenceGrouping.comparisons(SequenceGrouping.neighborhoods(in: SequenceGrouping.scanOrdered(densePhotos, direction: .older, startDate: nil), anchorRange: nil)))
 check(dirCompNewer == dirCompOlder, "Comparisons are identical regardless of scan direction")
+
+// MARK: - Incremental similarity grouping
+
+/// The Similar list's original from-scratch regroup (PhotoLibraryModel's old
+/// applyThreshold body), kept here as the reference the incremental version
+/// must match.
+func referenceDisplayGroups(progression: [String], pairs: [SimilarityPair], byID: [String: TimedPhoto], threshold: Float) -> [PhotoSequence] {
+    let shown = Set(progression)
+    var seen = Set<String>()
+    var ordered: [TimedPhoto] = []
+    for id in progression where seen.insert(id).inserted {
+        if let photo = byID[id] { ordered.append(photo) }
+    }
+    for pair in pairs where shown.contains(pair.first) || shown.contains(pair.second) {
+        for id in [pair.first, pair.second] where seen.insert(id).inserted {
+            if let photo = byID[id] { ordered.append(photo) }
+        }
+    }
+    return SimilarityGrouping.groups(photos: ordered, pairs: pairs, threshold: threshold)
+}
+
+func groupIDs(_ groups: [PhotoSequence]) -> [[String]] { groups.map { $0.photos.map(\.id) } }
+
+/// Compare incremental output to the reference. Membership must match exactly,
+/// and so must each scanned-containing group's position, first member, and
+/// scanned members' order. Only the order of not-yet-scanned members may differ.
+func groupingMismatch(_ incremental: [PhotoSequence], _ reference: [PhotoSequence], shown: Set<String>) -> String? {
+    let inc = groupIDs(incremental), ref = groupIDs(reference)
+    guard Set(inc.map(Set.init)) == Set(ref.map(Set.init)) else { return "membership \(inc) vs \(ref)" }
+    let scannedPart: ([[String]]) -> [[String]] = { groups in
+        groups.filter { shown.contains($0[0]) }.map { $0.filter { shown.contains($0) } }
+    }
+    guard scannedPart(inc) == scannedPart(ref) else { return "scanned order \(inc) vs \(ref)" }
+    return nil
+}
+
+/// Deterministic RNG so failures reproduce.
+struct SplitMix64 {
+    var state: UInt64
+    mutating func next() -> UInt64 {
+        state &+= 0x9E37_79B9_7F4A_7C15
+        var z = state
+        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+        return z ^ (z >> 31)
+    }
+    mutating func below(_ n: Int) -> Int { Int(next() % UInt64(n)) }
+}
+
+let groupThreshold: Float = 0.5
+func pair(_ a: String, _ b: String, _ d: Float) -> SimilarityPair {
+    SimilarityPair(first: min(a, b), second: max(a, b), distance: d)
+}
+
+// Hand-written cases.
+do {
+    let byID = Dictionary(uniqueKeysWithValues: ["a", "b", "c", "d"].map { ($0, photo($0, 0)) })
+    var g = IncrementalSimilarityGrouping(threshold: groupThreshold)
+    for id in ["a", "b", "c"] { g.markShown(id) }
+    g.addPair(pair("a", "b", 0.1))
+    g.addPair(pair("b", "c", 0.1))
+    g.flush(photosByID: byID)
+    check(groupIDs(g.groups) == [["a", "b", "c"]], "Incremental: chained edges form one group in scan order")
+    var bridged = g
+    bridged.removePhotos(["b"])
+    bridged.flush(photosByID: byID)
+    check(bridged.groups.isEmpty, "Incremental: deleting the bridge splits the group")
+    g.addPair(pair("c", "d", 0.9))
+    g.flush(photosByID: byID)
+    check(groupIDs(g.groups) == [["a", "b", "c"]], "Incremental: a dissimilar pair pulls in but doesn't join")
+}
+do {
+    let byID = Dictionary(uniqueKeysWithValues: ["s", "u"].map { ($0, photo($0, 0)) })
+    var g = IncrementalSimilarityGrouping(threshold: groupThreshold)
+    g.addPair(pair("s", "u", 0.1))
+    g.flush(photosByID: byID)
+    check(g.groups.isEmpty, "Incremental: pairs among unscanned photos stay hidden")
+    g.markShown("s")
+    g.flush(photosByID: byID)
+    check(groupIDs(g.groups) == [["s", "u"]], "Incremental: scanning a photo pulls in its similar neighbor")
+    g.markShown("u")
+    g.flush(photosByID: byID)
+    check(groupIDs(g.groups) == [["s", "u"]], "Incremental: scanning a pulled-in photo keeps the group")
+}
+
+// Randomized: replay add-pair / scan / delete sequences and compare every
+// step against the reference. Neighbors are drawn from nearby indices, like
+// the real time-local candidates.
+do {
+    var firstFailure: String?
+    var rebuildFailure: String?
+    var multiGroupSteps = 0
+    for seed in 0..<300 where firstFailure == nil && rebuildFailure == nil {
+        var rng = SplitMix64(state: UInt64(seed))
+        let count = 8 + rng.below(25)
+        var byID = Dictionary(uniqueKeysWithValues: (0..<count).map { ("p\($0)", photo("p\($0)", Double($0))) })
+        var alive = (0..<count).map { "p\($0)" }
+        var progression: [String] = []
+        var pairs: [SimilarityPair] = []
+        var measured = Set<CandidateComparison>()
+        var g = IncrementalSimilarityGrouping(threshold: groupThreshold)
+        for step in 0..<80 {
+            let roll = rng.below(10)
+            if roll < 5, alive.count > 1 {
+                let i = rng.below(alive.count)
+                let j = min(alive.count - 1, max(0, i + rng.below(9) - 4))
+                guard i != j else { continue }
+                let p = pair(alive[i], alive[j], Float(rng.below(100)) / 100)
+                guard measured.insert(CandidateComparison(p.first, p.second)).inserted else { continue }
+                pairs.append(p)
+                g.addPair(p)
+            } else if roll < 8 {
+                let unscanned = alive.filter { !progression.contains($0) }
+                guard !unscanned.isEmpty else { continue }
+                let id = unscanned[rng.below(unscanned.count)]
+                progression.append(id)
+                g.markShown(id)
+            } else if !alive.isEmpty {
+                let removed = Set((0..<(1 + rng.below(3))).map { _ in alive[rng.below(alive.count)] })
+                alive.removeAll { removed.contains($0) }
+                progression.removeAll { removed.contains($0) }
+                pairs.removeAll { removed.contains($0.first) || removed.contains($0.second) }
+                measured = Set(pairs.map { CandidateComparison($0.first, $0.second) })
+                for id in removed { byID[id] = nil }
+                g.removePhotos(removed)
+            }
+            if rng.below(3) > 0 {   // also exercise several updates per flush
+                g.flush(photosByID: byID)
+                let reference = referenceDisplayGroups(progression: progression, pairs: pairs, byID: byID, threshold: groupThreshold)
+                if reference.count > 1 { multiGroupSteps += 1 }
+                if let mismatch = groupingMismatch(g.groups, reference, shown: Set(progression)) {
+                    firstFailure = "seed \(seed) step \(step): \(mismatch)"
+                    break
+                }
+                var rebuilt = IncrementalSimilarityGrouping(threshold: groupThreshold, progression: progression, pairs: pairs, photosByID: byID)
+                rebuilt.flush(photosByID: byID)
+                if groupIDs(rebuilt.groups) != groupIDs(reference) {
+                    rebuildFailure = "seed \(seed) step \(step): \(groupIDs(rebuilt.groups)) vs \(groupIDs(reference))"
+                    break
+                }
+            }
+        }
+    }
+    check(firstFailure == nil, "Incremental grouping matches the full regroup across random add/scan/delete sequences \(firstFailure ?? "")")
+    check(rebuildFailure == nil, "Rebuild matches the full regroup exactly \(rebuildFailure ?? "")")
+    check(multiGroupSteps > 1_000, "Randomized grouping compared many multi-group states (\(multiGroupSteps))")
+}

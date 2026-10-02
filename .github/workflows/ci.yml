@@ -45,6 +45,7 @@ jobs:
           xcrun swiftc \
             CameraRollSorter/Models/SequenceGrouping.swift \
             CameraRollSorter/Models/SimilarityGrouping.swift \
+            CameraRollSorter/Models/IncrementalSimilarityGrouping.swift \
             Tests/main.swift \
             -o "$RUNNER_TEMP/CameraRollSorter-grouping-checks"
           "$RUNNER_TEMP/CameraRollSorter-grouping-checks"

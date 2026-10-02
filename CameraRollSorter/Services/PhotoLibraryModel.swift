@@ -29,6 +29,10 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
     // and dedup checks are O(1) instead of rebuilding a set of all pairs per
     // batch.
     private var measuredComparisons: Set<CandidateComparison> = []
+    // Similarity groups maintained incrementally from `pairs` and
+    // `scanProgression`; published into `groups`. Rebuilt by `applyThreshold()`.
+    // Not observed: views read `groups`.
+    @ObservationIgnored private var grouping = IncrementalSimilarityGrouping(threshold: 0.4)
     var analysisError: String?
     var threshold: Float = 0.4
     // All accessible photos. The id lookup and date span are derived here once
@@ -142,6 +146,7 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
         for pair in newPairs where photosByID[pair.first] != nil && photosByID[pair.second] != nil {
             if measuredComparisons.insert(CandidateComparison(pair.first, pair.second)).inserted {
                 accepted.append(pair)
+                grouping.addPair(pair)
             }
         }
         if !accepted.isEmpty { pairs.append(contentsOf: accepted) }
@@ -190,6 +195,8 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
         groups = []
         pairs = []
         measuredComparisons = []
+        threshold = Self.thresholdSetting
+        grouping = IncrementalSimilarityGrouping(threshold: threshold)
         photos = []
         unavailablePhotoIDs = []
         analysisError = nil
@@ -304,10 +311,10 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
                     partialResults: { [self] newPairs in
                         guard self.revision == token else { return }
                         self.appendMeasuredPairs(newPairs)
-                        // Regroup at most ~5×/sec during a batch instead of on
-                        // every 5-pair callback; a full regroup is O(photos+pairs)
-                        // and runs on the main actor, so coalescing avoids the lag.
-                        self.applyThresholdThrottled()
+                        // Publish at most ~5×/sec during a batch instead of on
+                        // every 5-pair callback, so the list doesn't re-render
+                        // constantly.
+                        self.publishGroupsThrottled()
                     }
                 )
                 guard revision == token, !Task.isCancelled else { isScanningBatch = false; return }
@@ -329,50 +336,54 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
             // the scan traversal.
             for id in batchAnchorIDs where photosByID[id] != nil && scannedIDs.insert(id).inserted {
                 scanProgression.append(id)
+                grouping.markShown(id)
             }
             advanceScanCursor()
-            applyThreshold()
+            publishGroups()
         }
         isScanningBatch = false
     }
 
-    // Last time a live regroup ran, to coalesce the frequent partial-results
-    // regroups during a batch (a full regroup is O(photos+pairs) on main).
+    // Last time streamed results were published, to coalesce the frequent
+    // partial-results updates during a batch. Grouping itself is incremental;
+    // this limits how often the list re-renders.
     private var lastLiveRegroup = Date.distantPast
     private let liveRegroupInterval = 0.2
 
-    /// Regroup at most every `liveRegroupInterval` seconds. Used for the
-    /// streaming partial results; the authoritative regroup still runs once at
-    /// the end of each batch via `applyThreshold()`.
-    private func applyThresholdThrottled() {
+    /// Publish at most every `liveRegroupInterval` seconds. Used for the
+    /// streaming partial results; each batch end publishes unconditionally.
+    private func publishGroupsThrottled() {
         let now = Date()
         guard now.timeIntervalSince(lastLiveRegroup) >= liveRegroupInterval else { return }
         lastLiveRegroup = now
-        applyThreshold()
+        publishGroups()
     }
 
+    /// Copy the incremental grouping's pending changes into `groups`. Cost is
+    /// proportional to the groups that changed.
+    private func publishGroups() {
+        if grouping.flush(photosByID: photosByID) { groups = grouping.groups }
+    }
+
+    private static var thresholdSetting: Float {
+        Float(UserDefaults.standard.object(forKey: "review.distanceThreshold") as? Double ?? 0.4)
+    }
+
+    /// Full regroup from scratch: re-reads the threshold and rebuilds the
+    /// incremental grouping from the current scan state. O(photos + pairs), so
+    /// it's only used for global changes — threshold change, scan-window
+    /// restart, library reconcile, cache prune. Streaming results and
+    /// deletions update the grouping incrementally instead.
     func applyThreshold() {
-        threshold = Float(UserDefaults.standard.object(forKey: "review.distanceThreshold") as? Double ?? 0.4)
-        // Group in *scan-progression* order so newly scanned groups append to
-        // the back of the list. Only photos actually scanned (in progression)
-        // anchor the display — this is what lets a window change CLEAR the view
-        // and rebuild from the new front even though `pairs` is still cached.
-        let byID = photosByID
-        let shown = Set(scanProgression)
-        var seen = Set<String>()
-        var ordered: [TimedPhoto] = []
-        for id in scanProgression where seen.insert(id).inserted {
-            if let photo = byID[id] { ordered.append(photo) }
-        }
-        // Pull in neighbors of scanned photos so a group never drops a member,
-        // but ONLY when the neighbor's pair touches a scanned (shown) photo.
-        // Pairs among not-yet-shown photos stay hidden until they're scanned.
-        for pair in pairs where shown.contains(pair.first) || shown.contains(pair.second) {
-            for id in [pair.first, pair.second] where seen.insert(id).inserted {
-                if let photo = byID[id] { ordered.append(photo) }
-            }
-        }
-        groups = SimilarityGrouping.groups(photos: ordered, pairs: pairs, threshold: threshold)
+        threshold = Self.thresholdSetting
+        grouping = IncrementalSimilarityGrouping(
+            threshold: threshold,
+            progression: scanProgression,
+            pairs: pairs,
+            photosByID: photosByID
+        )
+        grouping.flush(photosByID: photosByID)
+        groups = grouping.groups
     }
 
     /// Build the comparison list for the given neighborhoods, applying the
@@ -457,8 +468,15 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
         //     quickly; and if the setting changes again within 2s the cache is
         //     still intact. A debounced prune drops out-of-window cache entries
         //     once changes settle.
+        // Gate on the library being loaded (`fetchResult` is set once the
+        // fetch completes), not on `hasScanned`: that flag isn't set if the
+        // first scan is cancelled, which made later window changes fall through
+        // to the threshold-only path and never restart. While the initial fetch
+        // is still running, skip the restart (it would window an empty photo
+        // list and cancel the fetch); the fetch windows with the current
+        // settings when it lands.
         if newDirection != lastScanDirection || newStart != lastScanStartDate,
-           hasScanned || isScanning {
+           fetchResult != nil {
             lastScanDirection = newDirection
             lastScanStartDate = newStart
             restartScanForWindow(direction: newDirection, startDate: newStart)
@@ -501,6 +519,9 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
         scrollAnchorID = nil
         revision = UUID()
         applyThreshold()   // clears the visible list immediately
+        // The library is loaded and windowed. Set this here too, since a
+        // restart cancels the initial scan before it would have set it.
+        hasScanned = true
         isScanning = true
         let token = revision
         scanTask = Task {
@@ -543,6 +564,8 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
         let keepIDs = Set(SequenceGrouping.scanOrdered(photos, direction: direction, startDate: startDate).map(\.id))
         removePairs { !keepIDs.contains($0.first) || !keepIDs.contains($0.second) }
         unavailablePhotoIDs.formIntersection(keepIDs)
+        // The grouping indexes every pair; resync it with the pruned set.
+        applyThreshold()
     }
 
     func scores(for group: PhotoSequence) -> [SimilarityPair] {
@@ -592,9 +615,10 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
         scanProgression.removeAll { identifiers.contains($0) }
 
         // Deletion can only remove edges and split groups — never create a new
-        // similar pair. So no Vision work is needed; just regroup from the
-        // surviving measured edges.
-        applyThreshold()
+        // similar pair. So no Vision work is needed, and only the groups that
+        // lost a member are re-split.
+        grouping.removePhotos(identifiers)
+        publishGroups()
     }
 
     nonisolated func photoLibraryDidChange(_ changeInstance: PHChange) {
@@ -680,8 +704,9 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
 
         let token = UUID()
         revision = token
+        // Don't clear `hasScanned` here: if a window change supersedes this
+        // reconcile it returns early, which used to leave the flag false.
         isScanning = true
-        hasScanned = false
 
         let addedSet = Set(addedInsideWindow)
         // These added photos sit in the already-scanned region and are being
@@ -691,6 +716,10 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
         scannedIDs.formUnion(addedSet)
         advanceScanCursor()
         for id in addedInsideWindow where !scanProgression.contains(id) { scanProgression.append(id) }
+        // Resync the grouping with the reconciled library (removed photos and
+        // pairs, newly scanned photos) before streaming the new measurements
+        // into it incrementally.
+        applyThreshold()
         let anchorIndices = sortedPhotos.indices.filter { addedSet.contains(sortedPhotos[$0].id) }
         var neighborhoods: [CandidateNeighborhood] = []
         for anchorIndex in anchorIndices {
@@ -710,7 +739,7 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
                 partialResults: { [weak self] newPairs in
                     guard let self, self.revision == token else { return }
                     self.appendMeasuredPairs(newPairs)
-                    self.applyThresholdThrottled()
+                    self.publishGroupsThrottled()
                 }
             )
             guard revision == token else { return }
