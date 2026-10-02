@@ -85,13 +85,10 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
     // Top-visible group id, so the Similar list restores scroll position when
     // navigating away and back within a session. Not persisted across launches.
     var scrollAnchorID: String?
-    // Anchors processed per incremental step. The initial scan uses a larger
-    // batch to fill the first results quickly; once scanned, forward scanning
-    // (driven by scrolling) uses a smaller batch so it stays responsive and
-    // results appear more incrementally.
-    private let initialBatchSize = 256
-    private let forwardBatchSize = 64
-    private var batchSize: Int { hasScanned ? forwardBatchSize : initialBatchSize }
+    // Anchors handed to the analyzer per call. Anchors report as they finish
+    // and feature prints are cached across calls, so this only bounds how much
+    // work is planned at once; it doesn't delay results or add Vision work.
+    private let batchSize = 64
     /// True while the Similar photos list is on screen. Off → the scan only
     /// fills the small preview buffer (home screen); on → it fills the full
     /// buffer. Set via `setListActive`.
@@ -290,36 +287,41 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
                 if !scannedIDs.contains(sortedPhotos[index].id) { batchAnchorIndices.append(index) }
                 index += 1
             }
-            var neighborhoods: [CandidateNeighborhood] = []
+            // Per-anchor work, in scan order. Each comparison belongs to the
+            // first anchor in the batch that needs it, so an anchor is complete
+            // once its own list is measured (earlier anchors already covered
+            // the rest). Skip pairs already in the measurement cache: after a
+            // direction/start change we clear the display but keep `pairs`, so
+            // re-covering overlapping photos costs no Vision work. Anchor IDs
+            // are captured now, since a deletion during the batch reshuffles
+            // `sortedPhotos`.
+            var assigned: Set<CandidateComparison> = []
+            var work: [SimilarityAnalyzer.AnchorWork] = []
             for anchorIndex in batchAnchorIndices {
-                neighborhoods += SequenceGrouping.neighborhoods(in: sortedPhotos, anchorRange: anchorIndex..<(anchorIndex + 1))
+                let neighborhood = SequenceGrouping.neighborhoods(in: sortedPhotos, anchorRange: anchorIndex..<(anchorIndex + 1))
+                let comparisons = geoFilteredComparisons(for: neighborhood)
+                    .filter { !measuredComparisons.contains($0) && assigned.insert($0).inserted }
+                work.append(.init(anchor: sortedPhotos[anchorIndex].id, comparisons: comparisons))
             }
-            // Capture anchor IDs (in scan order) BEFORE awaiting Vision: a
-            // deletion during the batch reshuffles `sortedPhotos`, so indices
-            // would be stale afterward.
-            let batchAnchorIDs = batchAnchorIndices.map { sortedPhotos[$0].id }
-            // Reuse the measurement cache: skip pairs we already have scores
-            // for. After a direction/start change we clear the display but keep
-            // `pairs`, so re-covering overlapping photos costs no Vision work.
-            let batchComparisons = geoFilteredComparisons(for: neighborhoods)
-                .filter { !measuredComparisons.contains($0) }
 
             isScanningBatch = true
             do {
-                let scores = try await analyzer.analyzeComparisons(
-                    batchComparisons,
-                    partialResults: { [self] newPairs in
-                        guard self.revision == token else { return }
-                        self.appendMeasuredPairs(newPairs)
-                        // Publish at most ~5×/sec during a batch instead of on
-                        // every 5-pair callback, so the list doesn't re-render
-                        // constantly.
-                        self.publishGroupsThrottled()
-                    }
-                )
+                let scores = try await analyzer.analyze(work) { [self] newPairs, completed in
+                    guard self.revision == token else { return false }
+                    self.appendMeasuredPairs(newPairs)
+                    // Show each anchor's group as soon as the anchor is done,
+                    // rather than at the end of the batch.
+                    self.markScanned(completed)
+                    // Publish at most ~5×/sec so the list doesn't re-render
+                    // constantly.
+                    self.publishGroupsThrottled()
+                    // Stop mid-batch once the buffer ahead of the viewer is
+                    // full; unfinished anchors stay unscanned for later.
+                    return self.groups.count - self.scanAheadOf < ScanBuffer.effectiveTarget(listActive: self.listActive)
+                }
                 guard revision == token, !Task.isCancelled else { isScanningBatch = false; return }
-                // Every pair was already streamed through partialResults; this
-                // is a cheap dedup'd catch-all.
+                // Every pair was already streamed through progress; this is a
+                // cheap dedup'd catch-all.
                 appendMeasuredPairs(scores.pairs)
                 unavailablePhotoIDs.formUnion(scores.unavailableIDs.filter { photosByID[$0] != nil })
             } catch is CancellationError {
@@ -330,15 +332,6 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
                 isScanningBatch = false
                 return
             }
-
-            // Record scan-progression order (skip any already recorded, and any
-            // photo deleted while the batch ran). Within-batch order follows
-            // the scan traversal.
-            for id in batchAnchorIDs where photosByID[id] != nil && scannedIDs.insert(id).inserted {
-                scanProgression.append(id)
-                grouping.markShown(id)
-            }
-            advanceScanCursor()
             publishGroups()
         }
         isScanningBatch = false
@@ -357,6 +350,16 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
         guard now.timeIntervalSince(lastLiveRegroup) >= liveRegroupInterval else { return }
         lastLiveRegroup = now
         publishGroups()
+    }
+
+    /// Mark finished anchors as scanned, in the order given (scan order). Skips
+    /// photos already recorded and any deleted while their batch ran.
+    private func markScanned(_ ids: [String]) {
+        for id in ids where photosByID[id] != nil && scannedIDs.insert(id).inserted {
+            scanProgression.append(id)
+            grouping.markShown(id)
+        }
+        advanceScanCursor()
     }
 
     /// Copy the incremental grouping's pending changes into `groups`. Cost is
@@ -633,8 +636,18 @@ final class PhotoLibraryModel: NSObject, PHPhotoLibraryChangeObserver {
             // do nothing. This is what stops taking a photo from re-scanning.
             guard let details = changeInstance.changeDetails(for: fetchResult) else { return }
             // Advance our retained fetch result to the post-change state so the
-            // next notification diffs correctly.
+            // next notification diffs correctly. Do this before any await, so a
+            // notification arriving meanwhile doesn't re-diff this change.
             self.fetchResult = details.fetchResultAfterChanges
+            // Cached feature prints are kept across scans, so drop the ones for
+            // photos that were edited or removed. If the change can't be
+            // diffed, drop them all.
+            if details.hasIncrementalChanges {
+                let stale = Set((details.changedObjects + details.removedObjects).map(\.localIdentifier))
+                await self.analyzer.invalidate(stale)
+            } else {
+                await self.analyzer.clearCache()
+            }
             await self.syncLibrary()
         }
     }
