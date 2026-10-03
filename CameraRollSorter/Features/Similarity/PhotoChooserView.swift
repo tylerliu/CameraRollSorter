@@ -199,7 +199,7 @@ struct PhotoChooserView: View {
                     filmstrip(width: geometry.size.width)
 
                     if bestIDs.contains(preview.id) {
-                        Label("Suggested best shot", systemImage: "sparkles")
+                        Label("Suggested best photo", systemImage: "sparkles")
                             .font(.caption.weight(.medium))
                             .foregroundStyle(.secondary)
                     } else {
