@@ -1,7 +1,6 @@
 import Foundation
 import Photos
 import Observation
-import UIKit
 
 enum PhotoLibraryDeletionError: LocalizedError {
     case writeAccessRequired

@@ -11,7 +11,32 @@ struct PhotoInfoView: View {
     @State private var didLoadCameraMetadata = false
 
     var body: some View {
-        NavigationStack {
+        Group {
+            #if os(macOS)
+            infoContent
+            #else
+            NavigationStack {
+                infoContent
+                    .navigationTitle("Info")
+                    .inlineNavigationTitle()
+            }
+            #endif
+        }
+        .task(id: identifier) {
+            asset = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil).firstObject
+            filename = asset.flatMap { PHAssetResource.assetResources(for: $0).first?.originalFilename }
+            cameraMetadata = nil
+            didLoadCameraMetadata = false
+            if let asset {
+                let metadata = await loadCameraMetadata(for: asset)
+                guard !Task.isCancelled else { return }
+                cameraMetadata = metadata
+            }
+            didLoadCameraMetadata = true
+        }
+    }
+
+    private var infoContent: some View {
             List {
                 if let asset {
                     captureHeaderSection(asset)
@@ -23,20 +48,8 @@ struct PhotoInfoView: View {
                     ContentUnavailableView("Photo unavailable", systemImage: "photo.badge.exclamationmark")
                 }
             }
-            .listStyle(.insetGrouped)
-            .navigationTitle("Info")
-            .navigationBarTitleDisplayMode(.inline)
-        }
-        .task(id: identifier) {
-            asset = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil).firstObject
-            filename = asset.flatMap { PHAssetResource.assetResources(for: $0).first?.originalFilename }
-            cameraMetadata = nil
-            didLoadCameraMetadata = false
-            if let asset {
-                cameraMetadata = await loadCameraMetadata(for: asset)
-            }
-            didLoadCameraMetadata = true
-        }
+            .groupedListStyle()
+            .textSelection(.enabled)
     }
 
     // MARK: - Sections

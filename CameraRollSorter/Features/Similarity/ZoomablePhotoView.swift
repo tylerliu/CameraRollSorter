@@ -1,3 +1,6 @@
+// iOS single-photo view: pinch-zoom, tap, swipe-up, press-and-hold Live
+// playback. The macOS counterpart is PhotoPreviewView (Platform/macOS).
+#if os(iOS)
 import Photos
 import PhotosUI
 import SwiftUI
@@ -79,18 +82,7 @@ struct ZoomablePhotoView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .overlay(alignment: .topLeading) {
-            if showsLivePhoto, let badge = variation.badgeText {
-                HStack(spacing: 4) {
-                    variation.badgeIcon
-                    Text(badge)
-                }
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 8).padding(.vertical, 4)
-                .background(.black.opacity(0.4), in: Capsule())
-                .padding(10)
-                .allowsHitTesting(false)
-            }
+            if showsLivePhoto { LivePhotoBadge(variation: variation) }
         }
         .task(id: identifier) {
             // Reveal spinner if nothing has loaded within 300 ms.
@@ -99,98 +91,20 @@ struct ZoomablePhotoView: View {
                 if !Task.isCancelled { showSpinner = true }
             }
             livePhoto = nil
-            variation = Self.detectVariation(identifier)
+            variation = PhotoPreviewLoading.variation(for: identifier)
             // Load a still first for an immediate frame; then, if Live, load the
             // Live Photo and swap the scroll-view host in.
-            let image = await loadImage(identifier: identifier)
+            let image = await PhotoPreviewLoading.previewImage(for: identifier)
             if let image { displayedImage = image }
             showSpinner = false
             graceTimer.cancel()
             if showsLivePhoto && isLivePhoto {
-                livePhoto = await loadLivePhoto(identifier: identifier)
+                livePhoto = await PhotoPreviewLoading.livePhoto(for: identifier)
             }
         }
         .accessibilityLabel(isLivePhoto
             ? "Live Photo. Press and hold to play. Pinch to zoom. Swipe up for information."
             : "Photo. Pinch to zoom. Swipe up for information.")
-    }
-
-    private static func detectVariation(_ identifier: String) -> LivePhotoVariation {
-        guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil).firstObject else {
-            return .none
-        }
-        return LivePhotoVariation.of(asset)
-    }
-
-    /// Loads the Live Photo for press-and-hold playback. Returns nil if
-    /// unavailable locally.
-    private func loadLivePhoto(identifier: String) async -> PHLivePhoto? {
-        await withCheckedContinuation { continuation in
-            guard let asset = PHAsset.fetchAssets(
-                withLocalIdentifiers: [identifier], options: nil
-            ).firstObject else {
-                continuation.resume(returning: nil)
-                return
-            }
-            var resumed = false
-            let options = PHLivePhotoRequestOptions()
-            options.isNetworkAccessAllowed = false
-            options.deliveryMode = .highQualityFormat
-            PHImageManager.default().requestLivePhoto(
-                for: asset,
-                targetSize: PHImageManagerMaximumSize,
-                contentMode: .aspectFit,
-                options: options
-            ) { livePhoto, info in
-                let degraded = (info?[PHImageResultIsDegradedKey] as? Bool) == true
-                let cancelled = (info?[PHImageCancelledKey] as? Bool) == true
-                guard !resumed else { return }
-                if cancelled {
-                    resumed = true
-                    continuation.resume(returning: nil)
-                } else if !degraded {
-                    resumed = true
-                    continuation.resume(returning: livePhoto)
-                }
-                // Ignore degraded deliveries; wait for the final one.
-            }
-        }
-    }
-
-    /// Loads a 1024-pt preview for the given asset identifier. Waits for the
-    /// final (non-degraded) delivery. Returns nil if unavailable.
-    private func loadImage(identifier: String) async -> UIImage? {
-        await withCheckedContinuation { continuation in
-            guard let asset = PHAsset.fetchAssets(
-                withLocalIdentifiers: [identifier], options: nil
-            ).firstObject else {
-                continuation.resume(returning: nil)
-                return
-            }
-            var resumed = false
-            let options = PHImageRequestOptions()
-            options.isNetworkAccessAllowed = false
-            options.deliveryMode = .highQualityFormat
-            options.resizeMode = .exact
-            PHImageManager.default().requestImage(
-                for: asset,
-                targetSize: PHImageManagerMaximumSize,
-                contentMode: .aspectFit,
-                options: options
-            ) { image, info in
-                let degraded = (info?[PHImageResultIsDegradedKey] as? Bool) == true
-                let cancelled = (info?[PHImageCancelledKey] as? Bool) == true
-                guard !resumed else { return }
-                if cancelled {
-                    resumed = true
-                    continuation.resume(returning: nil)
-                } else if !degraded {
-                    resumed = true
-                    continuation.resume(returning: image)
-                }
-                // Ignore degraded previews; wait for the final delivery.
-            }
-        }
     }
 }
 
@@ -374,29 +288,4 @@ private struct LivePhotoZoomView: View {
         )
     }
 }
-
-extension LivePhotoVariation {
-    /// The badge's leading glyph, specific to each effect. Long Exposure uses
-    /// the timer hand inside a dotted ring (matching the Photos long-exposure
-    /// icon), which is composed from two symbols rather than a single one.
-    @ViewBuilder
-    var badgeIcon: some View {
-        switch self {
-        case .none, .live:
-            Image(systemName: "livephoto")
-        case .liveOff:
-            Image(systemName: "livephoto.slash")   // Live turned off, like Photos
-        case .loop:
-            Image(systemName: "arrow.triangle.2.circlepath")   // continuous loop
-        case .bounce:
-            Image(systemName: "arrow.left.arrow.right")        // back-and-forth
-        case .longExposure:
-            // Timer hand centered in a dotted ring, like the Photos icon.
-            ZStack {
-                Image(systemName: "circle.dotted")
-                Image(systemName: "timer")
-                    .font(.system(size: 7, weight: .semibold))
-            }
-        }
-    }
-}
+#endif

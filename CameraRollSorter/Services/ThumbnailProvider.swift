@@ -1,5 +1,4 @@
 import Photos
-import UIKit
 
 /// Shared thumbnail cache + PhotoKit image manager for grid/list cells.
 ///
@@ -21,7 +20,7 @@ final class ThumbnailProvider {
     static let shared = ThumbnailProvider()
 
     private let manager = PHCachingImageManager()
-    private let cache = NSCache<NSString, UIImage>()
+    private let cache = NSCache<NSString, PlatformImage>()
     private var assetByID: [String: PHAsset] = [:]
 
     private init() {
@@ -35,7 +34,7 @@ final class ThumbnailProvider {
 
     /// A finished thumbnail already in memory, if any. Lets a cell show its
     /// image immediately on scroll-back with no spinner flash.
-    func cachedImage(id: String, size: CGFloat, fill: Bool) -> UIImage? {
+    func cachedImage(id: String, size: CGFloat, fill: Bool) -> PlatformImage? {
         cache.object(forKey: cacheKey(id, size: size, fill: fill))
     }
 
@@ -59,7 +58,7 @@ final class ThumbnailProvider {
         id: String,
         size: CGFloat,
         fill: Bool,
-        completion: @escaping @MainActor (UIImage?, _ isFinal: Bool) -> Void
+        completion: @escaping @MainActor (PlatformImage?, _ isFinal: Bool) -> Void
     ) -> PHImageRequestID? {
         if let cached = cachedImage(id: id, size: size, fill: fill) {
             completion(cached, true)

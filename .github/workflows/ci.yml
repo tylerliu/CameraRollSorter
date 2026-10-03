@@ -13,13 +13,23 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  DEVELOPER_DIR: /Applications/Xcode_27.0.0.app/Contents/Developer
+
 jobs:
-  build-and-check:
-    name: Build and check
+  build:
+    name: Build (${{ matrix.platform }})
     runs-on: xcode-27
     timeout-minutes: 20
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_27.0.0.app/Contents/Developer
+    strategy:
+      # Report each platform independently; a macOS failure shouldn't hide iOS.
+      fail-fast: false
+      matrix:
+        include:
+          - platform: iOS
+            destination: generic/platform=iOS Simulator
+          - platform: macOS
+            destination: generic/platform=macOS
 
     steps:
       - name: Check out repository
@@ -28,17 +38,26 @@ jobs:
       - name: Show toolchain
         run: xcodebuild -version
 
-      - name: Build app for iOS Simulator
+      - name: Build app for ${{ matrix.platform }}
         run: |
           set -o pipefail
           xcodebuild \
             -project CameraRollSorter.xcodeproj \
             -scheme CameraRollSorter \
             -configuration Debug \
-            -destination 'generic/platform=iOS Simulator' \
+            -destination '${{ matrix.destination }}' \
             -derivedDataPath "$RUNNER_TEMP/CameraRollSorter-build" \
             CODE_SIGNING_ALLOWED=NO \
             build
+
+  checks:
+    name: Logic checks
+    runs-on: xcode-27
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
 
       - name: Run grouping checks
         run: |

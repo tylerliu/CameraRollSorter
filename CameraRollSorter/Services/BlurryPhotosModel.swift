@@ -1,7 +1,6 @@
 import Foundation
 import Observation
 import Photos
-import UIKit
 import Vision
 
 /// A detected low-aesthetic photo. Parallels `LivePhotoItem`; `score` is the
@@ -79,12 +78,15 @@ private actor BlurryPhotoScanner {
     /// can't score (notably the Simulator, where the request throws), are
     /// dropped — the flow simply shows nothing for those rather than fabricating
     /// a score.
-    func lowAestheticItems(in candidates: [TimedPhoto], cutoff: Double) -> [BlurryPhotoItem] {
+    func lowAestheticItems(in candidates: [TimedPhoto], cutoff: Double) async -> [BlurryPhotoItem] {
         guard #available(iOS 18.0, *) else { return [] }
         var items: [BlurryPhotoItem] = []
         for candidate in candidates {
+            guard !Task.isCancelled else { break }
+            let image = await PhotoImageLoading.image(for: candidate.id, targetSize: 512)
+            guard !Task.isCancelled else { break }
             autoreleasepool {
-                guard let cgImage = PhotoImageLoading.synchronousImage(for: candidate.id, targetSize: 512)?.cgImage else { return }
+                guard let cgImage = image?.platformCGImage else { return }
                 guard let score = try? AestheticsRequestRunner.score(for: cgImage) else { return }
                 // Non-utility only, and below the low-aesthetic cutoff.
                 guard !score.isUtility, Double(score.overall) < cutoff else { return }
