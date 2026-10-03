@@ -132,7 +132,6 @@ struct PhotoSelectionGrid<ActionBar: View>: View {
         }
     }
 
-    private let columns = [GridItem(.adaptive(minimum: 110), spacing: 3)]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -211,7 +210,31 @@ struct PhotoSelectionGrid<ActionBar: View>: View {
         scrollAnchorID = ids[top]
     }
 
+    /// Use the target size to choose a column count, then share all available
+    /// width equally so larger windows show more photos without gaps.
+    private var targetTileSize: CGFloat {
+        #if os(macOS)
+        200
+        #else
+        120
+        #endif
+    }
+
     private var grid: some View {
+        GeometryReader { geometry in
+            let availableWidth = max(1, geometry.size.width)
+            let count = max(1, Int(availableWidth / targetTileSize))
+            let tileSize = availableWidth / CGFloat(count)
+            // With this column count, tiles stay below the next-column threshold.
+            // Request that upper bound once rather than on every resize tick.
+            let requestSize = targetTileSize * CGFloat(count + 1) / CGFloat(count)
+            gridContent(tileSize: tileSize, requestSize: requestSize, gridColumns: Array(
+                repeating: GridItem(.flexible(), spacing: 0), count: count
+            ), spacing: 0, inset: 0)
+        }
+    }
+
+    private func gridContent(tileSize: CGFloat, requestSize: CGFloat, gridColumns: [GridItem], spacing: CGFloat, inset: CGFloat) -> some View {
         ScrollViewReader { proxy in
             ScrollView {
                 // Lazy outer stack so the bottom status row's onAppear/
@@ -219,9 +242,9 @@ struct PhotoSelectionGrid<ActionBar: View>: View {
                 // plain ScrollView body they fire when the view is built, which
                 // made the scan think the viewer was always at the end.
                 LazyVStack(spacing: 0) {
-                    LazyVGrid(columns: columns, spacing: 3) {
+                    LazyVGrid(columns: gridColumns, spacing: spacing) {
                         ForEach(Array(ids.enumerated()), id: \.element) { index, id in
-                            cell(for: id).id(id)
+                            cell(for: id, size: tileSize, requestSize: requestSize).id(id)
                                 // Report the viewer's position so the scan keeps
                                 // a rolling buffer ahead of it, and track the
                                 // topmost visible cell so scroll position
@@ -238,7 +261,7 @@ struct PhotoSelectionGrid<ActionBar: View>: View {
                                 }
                         }
                     }
-                    .padding(3)
+                    .padding(inset)
 
                     // Auto-continue classifying when more remains and the
                     // bottom is reached.
@@ -282,12 +305,12 @@ struct PhotoSelectionGrid<ActionBar: View>: View {
         }
     }
 
-    private func cell(for id: String) -> some View {
+    private func cell(for id: String, size: CGFloat, requestSize: CGFloat) -> some View {
         let selected = selection.contains(id)
-        return PhotoThumbnail(identifier: id, size: 120, fill: true, cornerRadius: 4)
+        return PhotoThumbnail(identifier: id, size: size, requestSize: requestSize, fill: true, cornerRadius: 0)
             .overlay {
                 if selected {
-                    RoundedRectangle(cornerRadius: 4).stroke(.tint, lineWidth: 3)
+                    RoundedRectangle(cornerRadius: 0).strokeBorder(.tint, lineWidth: 3)
                 }
             }
             // Tap the body: in select mode toggle the tick; otherwise open the

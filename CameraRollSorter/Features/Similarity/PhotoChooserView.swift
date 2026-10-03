@@ -219,12 +219,20 @@ struct PhotoChooserView: View {
         }
     }
 
+    private var filmstripThumbnailSize: CGFloat {
+        #if os(macOS)
+        90
+        #else
+        54
+        #endif
+    }
+
     private func filmstrip(width: CGFloat) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
             LazyHStack(spacing: 7) {
                 ForEach(Array(orderedPhotos.enumerated()), id: \.element.id) { index, photo in
                     VStack(spacing: 4) {
-                        PhotoThumbnail(identifier: photo.id, size: 54)
+                        PhotoThumbnail(identifier: photo.id, size: filmstripThumbnailSize)
                             .overlay(alignment: .bottomTrailing) {
                                 ZStack {
                                     Circle()
@@ -263,10 +271,10 @@ struct PhotoChooserView: View {
             }
             .scrollTargetLayout()
         }
-        .contentMargins(.horizontal, max(0, (width - 54) / 2), for: .scrollContent)
+        .contentMargins(.horizontal, max(0, (width - filmstripThumbnailSize) / 2), for: .scrollContent)
         .scrollTargetBehavior(.viewAligned(limitBehavior: .always))
         .scrollPosition(id: $centeredPhotoID, anchor: .center)
-        .frame(height: 82)
+        .frame(height: filmstripThumbnailSize + 28)
         .task(id: sequence.id) {
             guard centeredPhotoID == nil, let firstID = orderedPhotos.first?.id else { return }
             await Task.yield()

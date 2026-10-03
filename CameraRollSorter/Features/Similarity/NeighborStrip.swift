@@ -29,7 +29,13 @@ struct NeighborStrip: View {
     @State private var quickLookURLs: [URL] = []
     #endif
 
-    private let thumbSize: CGFloat = 58
+    private var thumbSize: CGFloat {
+        #if os(macOS)
+        72
+        #else
+        58
+        #endif
+    }
 
     var body: some View {
         VStack(spacing: 4) {

@@ -4,6 +4,8 @@ import SwiftUI
 struct PhotoThumbnail: View {
     let identifier: String
     var size: CGFloat = 100
+    /// Decouple image resolution from layout during continuous window resizing.
+    var requestSize: CGFloat? = nil
     /// When true, fills the square by cropping the image (center-crop, like the
     /// Photos grid). When false (default), fits the whole image letterboxed.
     var fill: Bool = false
@@ -17,6 +19,9 @@ struct PhotoThumbnail: View {
     @State private var request: PHImageRequestID?
     @State private var generation = UUID()
     @State private var finished = false
+    @State private var loadedIdentifier: String?
+
+    private var imageRequestSize: CGFloat { requestSize ?? size }
 
     var body: some View {
         ZStack {
@@ -37,26 +42,30 @@ struct PhotoThumbnail: View {
         .contentShape(RoundedRectangle(cornerRadius: cornerRadius))
         .onAppear(perform: load)
         .onChange(of: identifier) { _, _ in load() }
+        .onChange(of: imageRequestSize) { _, _ in load() }
         .onDisappear(perform: cancelRequest)
     }
 
     private func load() {
+        cancelRequest()
+        if loadedIdentifier != identifier {
+            image = nil
+            finished = false
+            loadedIdentifier = identifier
+        }
         // Fast path: a finished thumbnail already in the shared cache shows
         // immediately with no spinner — this is what keeps scroll-back smooth.
-        if let cached = ThumbnailProvider.shared.cachedImage(id: identifier, size: size, fill: fill) {
+        if let cached = ThumbnailProvider.shared.cachedImage(id: identifier, size: imageRequestSize, fill: fill) {
             image = cached
             finished = true
             return
         }
 
-        cancelRequest()
         let token = UUID()
         generation = token
-        image = nil
-        finished = false
-
+        // Preserve the displayed thumbnail while a sharper replacement loads.
         request = ThumbnailProvider.shared.requestThumbnail(
-            id: identifier, size: size, fill: fill
+            id: identifier, size: imageRequestSize, fill: fill
         ) { result, isFinal in
             guard generation == token else { return }
             if let result { image = result }

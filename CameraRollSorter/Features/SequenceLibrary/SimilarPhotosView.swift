@@ -72,6 +72,14 @@ struct SimilarPhotosView: View {
         .inlineNavigationTitle()
     }
 
+    private var groupThumbnailSize: CGFloat {
+        #if os(macOS)
+        144
+        #else
+        72
+        #endif
+    }
+
     private var list: some View {
         ScrollViewReader { proxy in
         List {
@@ -110,7 +118,7 @@ struct SimilarPhotosView: View {
                             PhotoChooserView(sequence: group, library: library)
                         } label: {
                             HStack {
-                                PhotoThumbnail(identifier: group.photos[0].id, size: 72)
+                                PhotoThumbnail(identifier: group.photos[0].id, size: groupThumbnailSize)
                                 VStack(alignment: .leading) {
                                     Text("\(group.photos.count) similar photos")
                                     Text(Self.rowDate(group.photos[0].date))
