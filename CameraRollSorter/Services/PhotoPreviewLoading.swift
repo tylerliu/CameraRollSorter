@@ -13,7 +13,8 @@ enum PhotoPreviewLoading {
         return LivePhotoVariation.of(asset)
     }
 
-    /// A 1024-pt aspect-fit preview.
+    /// A full-resolution still for the viewer, including large Retina windows
+    /// and zooming on iOS.
     static func previewImage(for identifier: String) async -> PlatformImage? {
         await withCheckedContinuation { continuation in
             guard let asset = PHAsset.fetchAssets(
@@ -29,7 +30,7 @@ enum PhotoPreviewLoading {
             options.resizeMode = .exact
             PHImageManager.default().requestImage(
                 for: asset,
-                targetSize: CGSize(width: 1024, height: 1024),
+                targetSize: PHImageManagerMaximumSize,
                 contentMode: .aspectFit,
                 options: options
             ) { image, info in
