@@ -95,7 +95,7 @@ extension View {
         #endif
     }
 
-    /// Full-screen cover on iOS. macOS has none, so it's a large resizable sheet.
+    /// Full-screen cover on iOS; a separate resizable viewer window on macOS.
     func platformFullScreenCover<Content: View>(
         isPresented: Binding<Bool>,
         @ViewBuilder content: @escaping () -> Content
@@ -103,8 +103,9 @@ extension View {
         #if os(iOS)
         fullScreenCover(isPresented: isPresented, content: content)
         #else
-        sheet(isPresented: isPresented) {
-            content().frame(minWidth: 760, idealWidth: 1000, minHeight: 560, idealHeight: 760)
+        background {
+            MacViewerWindow(isPresented: isPresented, content: content)
+                .frame(width: 0, height: 0)
         }
         #endif
     }

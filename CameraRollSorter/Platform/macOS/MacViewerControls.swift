@@ -1,0 +1,172 @@
+#if os(macOS)
+import AppKit
+import SwiftUI
+
+struct MacViewerWindow<Content: View>: NSViewRepresentable {
+    @Binding var isPresented: Bool
+    let content: () -> Content
+
+    func makeNSView(context: Context) -> NSView { NSView() }
+    func makeCoordinator() -> Coordinator { Coordinator() }
+    func updateNSView(_ view: NSView, context: Context) {
+        let coordinator = context.coordinator
+        coordinator.onClose = { isPresented = false }
+        if isPresented {
+            if coordinator.window == nil {
+                let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 760),
+                                      styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                                      backing: .buffered, defer: false)
+                window.title = "Photo viewer"
+                window.isReleasedWhenClosed = false
+                window.collectionBehavior = [.fullScreenPrimary]
+                window.minSize = NSSize(width: 760, height: 560)
+                window.delegate = coordinator
+                coordinator.window = window
+                window.center()
+            }
+            let root = AnyView(content())
+            if let hosting = coordinator.window?.contentView as? NSHostingView<AnyView> {
+                hosting.rootView = root
+            } else {
+                coordinator.window?.contentView = NSHostingView(rootView: root)
+            }
+            coordinator.window?.makeKeyAndOrderFront(nil)
+        } else {
+            coordinator.window?.close()
+        }
+    }
+    static func dismantleNSView(_ view: NSView, coordinator: Coordinator) { coordinator.window?.close() }
+    final class Coordinator: NSObject, NSWindowDelegate {
+        var window: NSWindow?
+        var onClose: (() -> Void)?
+        func windowWillClose(_ notification: Notification) {
+            window = nil
+            onClose?()
+        }
+    }
+}
+
+/// An inline inspector with enough width and height for readable metadata.
+struct MacPhotoInfoPane: View {
+    let identifier: String
+    let close: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Info").font(.headline)
+                Spacer()
+                Button(action: close) { Image(systemName: "xmark") }
+                    .buttonStyle(.borderless)
+                    .help("Hide photo info")
+                    .accessibilityLabel("Hide photo info")
+            }
+            .padding(16)
+            Divider()
+            PhotoInfoView(identifier: identifier)
+                .frame(maxHeight: .infinity)
+        }
+        .frame(width: 340)
+        .frame(maxHeight: .infinity)
+        .background(.background)
+    }
+}
+
+/// Keeps adjacent photos loaded while a two-finger swipe follows the trackpad.
+struct MacPhotoPager: View {
+    let identifiers: [String]
+    @Binding var currentIndex: Int
+    var onClick: ((String) -> Void)? = nil
+    @State private var translation: CGFloat = 0
+
+    var body: some View {
+        GeometryReader { geometry in
+            let width = max(1, geometry.size.width)
+            ZStack {
+                ForEach(identifiers.indices.filter { abs($0 - currentIndex) <= 1 }, id: \.self) { index in
+                    PhotoPreviewView(identifier: identifiers[index], onClick: {
+                        onClick?(identifiers[index])
+                    })
+                    .frame(width: width, height: geometry.size.height)
+                    .offset(x: CGFloat(index - currentIndex) * width + translation)
+                }
+            }
+            .frame(width: width, height: geometry.size.height)
+            .clipped()
+            .overlay {
+                MacPhotoPagingSurface { delta in
+                    let atEdge = (currentIndex == 0 && delta > 0)
+                        || (currentIndex == identifiers.count - 1 && delta < 0)
+                    translation = atEdge ? delta * 0.25 : delta
+                } onEnd: { cancelled in
+                    let step = translation < 0 ? 1 : -1
+                    let target = currentIndex + step
+                    withAnimation(.easeOut(duration: 0.25)) {
+                        if !cancelled, abs(translation) > min(120, width * 0.2),
+                           identifiers.indices.contains(target) {
+                            currentIndex = target
+                        }
+                        translation = 0
+                    }
+                }
+            }
+        }
+        .animation(.easeOut(duration: 0.25), value: currentIndex)
+    }
+}
+
+/// Observes precise horizontal scroll gestures over the photo, excluding momentum.
+private struct MacPhotoPagingSurface: NSViewRepresentable {
+    let onChange: (CGFloat) -> Void
+    let onEnd: (Bool) -> Void
+
+    func makeNSView(context: Context) -> PagingView { PagingView() }
+    func updateNSView(_ view: PagingView, context: Context) {
+        view.onChange = onChange
+        view.onEnd = onEnd
+    }
+
+    final class PagingView: NSView {
+        var onChange: ((CGFloat) -> Void)?
+        var onEnd: ((Bool) -> Void)?
+        private var horizontal: CGFloat = 0
+        private var vertical: CGFloat = 0
+        private var tracking = false
+        private var isHorizontal = false
+        private var monitor: Any?
+
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+                guard let self, event.window === self.window,
+                      event.hasPreciseScrollingDeltas, event.momentumPhase.isEmpty else { return event }
+                if event.phase.contains(.began) {
+                    self.tracking = self.bounds.contains(self.convert(event.locationInWindow, from: nil))
+                    self.horizontal = 0
+                    self.vertical = 0
+                    self.isHorizontal = false
+                }
+                guard self.tracking else { return event }
+                if event.phase.contains(.ended) || event.phase.contains(.cancelled) {
+                    self.tracking = false
+                    self.onEnd?(event.phase.contains(.cancelled))
+                    return self.isHorizontal ? nil : event
+                }
+                self.horizontal += event.scrollingDeltaX
+                self.vertical += event.scrollingDeltaY
+                if abs(self.horizontal) > 8 && abs(self.horizontal) > abs(self.vertical) * 1.5 {
+                    self.isHorizontal = true
+                }
+                if self.isHorizontal {
+                    self.onChange?(self.horizontal)
+                    return nil
+                }
+                return event
+            }
+        }
+        deinit { if let monitor { NSEvent.removeMonitor(monitor) } }
+    }
+}
+#endif

@@ -45,8 +45,19 @@ struct PhotoChooserView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            burstContent
+            HStack(spacing: 0) {
+                burstContent
+                #if os(macOS)
+                if infoPhotoID != nil, let id = previewID {
+                    Divider()
+                    MacPhotoInfoPane(identifier: id) { infoPhotoID = nil }
+                }
+                #endif
+            }
         }
+        #if os(macOS)
+        .safeAreaInset(edge: .top) { macControls }
+        #endif
         .safeAreaInset(edge: .bottom) { actionBar }
         .navigationTitle("Choose photos")
         .inlineNavigationTitle()
@@ -66,6 +77,7 @@ struct PhotoChooserView: View {
         } message: {
             Text(deletionError ?? "Try again after checking photo access.")
         }
+        #if os(iOS)
         .sheet(isPresented: infoSheetBinding) {
             if let infoPhotoID {
                 PhotoInfoView(identifier: infoPhotoID)
@@ -74,6 +86,7 @@ struct PhotoChooserView: View {
                     .presentationBackgroundInteraction(.enabled(upThrough: .medium))
             }
         }
+        #endif
         .task(id: sequence.id) {
             // Compute the flicker-comparison ordering here (not in init) so the
             // list stays smooth: building this view as a NavigationLink
@@ -100,6 +113,49 @@ struct PhotoChooserView: View {
         }
     }
 
+    #if os(macOS)
+    private var macControls: some View {
+        HStack(spacing: 12) {
+            Button("Back", systemImage: "chevron.backward") { dismiss() }
+            Spacer()
+            Button("Previous", systemImage: "chevron.left") { movePreview(-1) }
+                .keyboardShortcut(.leftArrow, modifiers: [])
+                .disabled(burstPreviewIndex == 0)
+            Text("\(orderedPhotos.isEmpty ? 0 : burstPreviewIndex + 1) of \(orderedPhotos.count)")
+            Button("Next", systemImage: "chevron.right") { movePreview(1) }
+                .keyboardShortcut(.rightArrow, modifiers: [])
+                .disabled(burstPreviewIndex >= orderedPhotos.count - 1)
+            Spacer()
+            Button("Info", systemImage: "info.circle") {
+                infoPhotoID = infoPhotoID == nil ? previewID : nil
+            }
+            .keyboardShortcut("i", modifiers: .command)
+            .disabled(previewID == nil)
+            Button(previewID.map { keptIDs.contains($0) } == true ? "Kept" : "Keep",
+                   systemImage: previewID.map { keptIDs.contains($0) } == true ? "checkmark.circle.fill" : "circle") {
+                if let id = previewID { toggle(id) }
+            }
+            .keyboardShortcut(.space, modifiers: [])
+            .disabled(previewID == nil)
+        }
+        .buttonStyle(.bordered)
+        .padding(12)
+        .background(.bar)
+    }
+    #endif
+
+    private var previewID: String? {
+        guard orderedPhotos.indices.contains(burstPreviewIndex) else { return nil }
+        return orderedPhotos[burstPreviewIndex].id
+    }
+
+    private func movePreview(_ offset: Int) {
+        let index = burstPreviewIndex + offset
+        guard orderedPhotos.indices.contains(index) else { return }
+        burstPreviewIndex = index
+        centeredPhotoID = orderedPhotos[index].id
+    }
+
     private var burstContent: some View {
         GeometryReader { geometry in
             VStack(spacing: 10) {
@@ -113,7 +169,8 @@ struct PhotoChooserView: View {
                             infoPhotoID = preview.id
                         }
                         #else
-                        PhotoPreviewView(identifier: preview.id, onClick: { toggle(preview.id) })
+                        MacPhotoPager(identifiers: orderedPhotos.map(\.id),
+                                      currentIndex: $burstPreviewIndex, onClick: toggle)
                         #endif
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
