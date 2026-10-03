@@ -79,6 +79,28 @@ final class LiveToStillModel: IncrementalScanModel<LivePhotoItem> {
         return jobs.count
     }
 
+    /// Delete the original Live Photo without converting it. PhotoKit supplies
+    /// the system confirmation and leaves the library unchanged on cancellation.
+    func deletePhoto(_ identifier: String) async throws {
+        guard canRead else { throw LiveToStillError.writeAccessRequired }
+        let assets = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil)
+        guard assets.count > 0 else { return }
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            PHPhotoLibrary.shared().performChanges({
+                PHAssetChangeRequest.deleteAssets(assets)
+            }) { success, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else if success {
+                    continuation.resume()
+                } else {
+                    continuation.resume(throwing: LiveToStillError.changeRejected)
+                }
+            }
+        }
+        removeFromCurrentResults([identifier])
+    }
+
     /// Full-resolution still-image data for the Live Photo's photo resource.
     /// This data already carries the original EXIF/GPS metadata, so re-saving it
     /// verbatim preserves metadata without re-encoding.

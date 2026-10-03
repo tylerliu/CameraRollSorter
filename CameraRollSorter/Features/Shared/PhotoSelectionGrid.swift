@@ -72,6 +72,9 @@ struct PhotoSelectionGrid<ActionBar: View>: View {
     /// When true, the full-screen detail view shows a strip of each photo's
     /// nearest temporal neighbors. Used by the Low-aesthetic flow; off elsewhere.
     var showsNeighbors: Bool = false
+    /// Optional per-photo deletion exposed through right-click / long-press.
+    var onDeletePhoto: ((String) -> Void)? = nil
+    var deletionEnabled: Bool = true
     /// Bottom action bar (Convert / Delete / …), rendered via safeAreaInset.
     /// Receives whether the grid is currently in select mode so the host can
     /// tailor its selection hint text (e.g. "Tap or drag to select").
@@ -347,6 +350,14 @@ struct PhotoSelectionGrid<ActionBar: View>: View {
                     )
                 }
             )
+            .contextMenu {
+                if let onDeletePhoto {
+                    Button(role: .destructive) { onDeletePhoto(id) } label: {
+                        Label("Delete Photo", systemImage: "trash")
+                    }
+                    .disabled(!deletionEnabled)
+                }
+            }
             .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
