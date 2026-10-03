@@ -75,12 +75,12 @@ extension View {
         #endif
     }
 
-    /// Wheel date picker on iOS; the graphical calendar on macOS (no wheel there).
-    func wheelDatePickerStyle() -> some View {
+    /// Touch-friendly wheels on iOS; editable date segments and a stepper on Mac.
+    func scanDatePickerStyle() -> some View {
         #if os(iOS)
         datePickerStyle(.wheel)
         #else
-        datePickerStyle(.graphical)
+        datePickerStyle(.stepperField)
         #endif
     }
 
