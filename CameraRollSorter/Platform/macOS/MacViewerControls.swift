@@ -28,10 +28,27 @@ struct MacPhotoInfoPane: View {
     }
 }
 
+/// Shared toolbar zoom control for both Mac viewers.
+struct MacPhotoZoomControl: View {
+    @Binding var scale: CGFloat
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "minus.magnifyingglass")
+            Slider(value: $scale, in: 1...5)
+                .frame(width: 120)
+                .accessibilityLabel("Photo zoom")
+            Image(systemName: "plus.magnifyingglass")
+        }
+        .foregroundStyle(.secondary)
+    }
+}
+
 /// Keeps adjacent photos loaded while a two-finger swipe follows the trackpad.
 struct MacPhotoPager: View {
     let identifiers: [String]
     @Binding var currentIndex: Int
+    @Binding var zoomScale: CGFloat
     var onClick: ((String) -> Void)? = nil
     var animatesIndexChanges = true
     @State private var translation: CGFloat = 0
@@ -43,7 +60,8 @@ struct MacPhotoPager: View {
                 ForEach(identifiers.indices.filter { abs($0 - currentIndex) <= 1 }, id: \.self) { index in
                     PhotoPreviewView(identifier: identifiers[index], onClick: {
                         onClick?(identifiers[index])
-                    })
+                    }, isCurrent: index == currentIndex,
+                       zoomScale: index == currentIndex ? $zoomScale : .constant(1))
                     .frame(width: width, height: geometry.size.height)
                     .offset(x: CGFloat(index - currentIndex) * width + translation)
                 }
@@ -51,7 +69,7 @@ struct MacPhotoPager: View {
             .frame(width: width, height: geometry.size.height)
             .clipped()
             .overlay {
-                MacPhotoPagingSurface(onMove: { step in
+                MacPhotoPagingSurface(allowsPaging: zoomScale <= 1, onMove: { step in
                     let target = currentIndex + step
                     guard identifiers.indices.contains(target) else { return }
                     translation = 0
@@ -77,23 +95,27 @@ struct MacPhotoPager: View {
         // constant trigger preserves those explicit animations while default
         // viewers animate every page change, including keyboard navigation.
         .animation(.easeOut(duration: 0.25), value: animatesIndexChanges ? currentIndex : -1)
+        .onChange(of: currentIndex) { _, _ in zoomScale = 1 }
     }
 }
 
 /// Observes precise horizontal scroll gestures over the photo, excluding momentum.
 private struct MacPhotoPagingSurface: NSViewRepresentable {
+    let allowsPaging: Bool
     let onMove: (Int) -> Void
     let onChange: (CGFloat) -> Void
     let onEnd: (Bool) -> Void
 
     func makeNSView(context: Context) -> PagingView { PagingView() }
     func updateNSView(_ view: PagingView, context: Context) {
+        view.allowsPaging = allowsPaging
         view.onMove = onMove
         view.onChange = onChange
         view.onEnd = onEnd
     }
 
     final class PagingView: NSView {
+        var allowsPaging = true
         var onMove: ((Int) -> Void)?
         var onChange: ((CGFloat) -> Void)?
         var onEnd: ((Bool) -> Void)?
@@ -120,6 +142,7 @@ private struct MacPhotoPagingSurface: NSViewRepresentable {
                     if event.keyCode == 124 { self.onMove?(1); return nil }
                     return event
                 }
+                guard self.allowsPaging else { self.tracking = false; return event }
                 guard event.hasPreciseScrollingDeltas, event.momentumPhase.isEmpty else { return event }
                 if event.phase.contains(.began) {
                     self.tracking = self.bounds.contains(self.convert(event.locationInWindow, from: nil))

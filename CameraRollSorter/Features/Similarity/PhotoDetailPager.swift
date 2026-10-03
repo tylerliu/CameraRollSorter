@@ -21,6 +21,9 @@ struct PhotoDetailPager: View {
     let showsNeighbors: Bool
     @Environment(\.dismiss) private var dismiss
     @State private var isZoomed = false
+    #if os(macOS)
+    @State private var macZoomScale: CGFloat = 1
+    #endif
     @State private var infoID: String?
     /// The neighbor (or reviewed photo) currently being held for a peek preview.
     @State private var peekID: String?
@@ -121,6 +124,7 @@ struct PhotoDetailPager: View {
     #if os(macOS)
     private var macControls: some View {
         HStack(spacing: 16) {
+            MacPhotoZoomControl(scale: $macZoomScale)
             Button { move(-1) } label: { Image(systemName: "chevron.left") }
                 .keyboardShortcut(.leftArrow, modifiers: [])
                 .disabled(currentIndex == nil || currentIndex == 0)
@@ -149,7 +153,7 @@ struct PhotoDetailPager: View {
                 MacPhotoPager(identifiers: identifiers, currentIndex: Binding(
                     get: { currentIndex ?? 0 },
                     set: { if identifiers.indices.contains($0) { currentID = identifiers[$0] } }
-                ))
+                ), zoomScale: $macZoomScale)
             } else {
                 ContentUnavailableView("No photos", systemImage: "photo")
             }
