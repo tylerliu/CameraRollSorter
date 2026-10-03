@@ -293,36 +293,38 @@ struct PhotoChooserView: View {
     }
 
     private var actionBar: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: PhotoActionBarLayout.spacing) {
             Divider()
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("\(keptIDs.count) of \(orderedPhotos.count) kept")
-                        .font(.subheadline.weight(.semibold))
+                        .font(PhotoActionBarLayout.titleFont)
                     if markedForDeletion.isEmpty {
                         Text("No photos marked for deletion")
                     } else {
                         Text("\(markedForDeletion.count) will go to Recently Deleted")
                     }
                 }
-                .font(.caption)
+                .font(PhotoActionBarLayout.detailFont)
                 .foregroundStyle(.secondary)
                 Spacer()
                 Button(role: .destructive) {
                     deleteMarkedPhotos()
                 } label: {
-                    if isDeleting {
-                        ProgressView()
-                    } else {
-                        Label("Delete \(markedForDeletion.count)", systemImage: "trash")
+                    Group {
+                        if isDeleting {
+                            ProgressView()
+                        } else {
+                            Label("Delete \(markedForDeletion.count)", systemImage: "trash")
+                        }
                     }
+                    .photoActionButtonLabelSizing()
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.red)
                 .disabled(markedForDeletion.isEmpty || isDeleting)
             }
-            .padding(.horizontal)
-            .padding(.bottom, 6)
+            .photoActionBarSizing()
         }
         .background(.bar)
     }

@@ -110,3 +110,59 @@ extension View {
         #endif
     }
 }
+
+/// Readable action-bar typography and button sizing for each platform.
+enum PhotoActionBarLayout {
+    static var spacing: CGFloat {
+        #if os(macOS)
+        0
+        #else
+        8
+        #endif
+    }
+
+    static var titleFont: Font {
+        #if os(macOS)
+        .system(size: 16, weight: .semibold)
+        #else
+        .subheadline.weight(.semibold)
+        #endif
+    }
+
+    static var detailFont: Font {
+        #if os(macOS)
+        .system(size: 12)
+        #else
+        .caption
+        #endif
+    }
+}
+
+extension View {
+    func photoActionButtonLabelSizing() -> some View {
+        #if os(macOS)
+        self
+            .font(.system(size: 16, weight: .semibold))
+            .frame(minWidth: 140, minHeight: 26)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 2)
+        #else
+        self
+        #endif
+    }
+
+    func photoActionBarSizing() -> some View {
+        #if os(macOS)
+        self
+            .font(.system(size: 16))
+            .controlSize(.large)
+            .frame(minHeight: 44)
+            .padding(.horizontal, 24)
+            .padding(.vertical, 6)
+        #else
+        self
+            .padding(.horizontal)
+            .padding(.bottom, 6)
+        #endif
+    }
+}

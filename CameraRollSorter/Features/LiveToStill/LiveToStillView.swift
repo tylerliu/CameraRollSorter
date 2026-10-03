@@ -65,30 +65,32 @@ struct LiveToStillView: View {
     }
 
     private func actionBar(isSelecting: Bool) -> some View {
-        VStack(spacing: 8) {
+        VStack(spacing: PhotoActionBarLayout.spacing) {
             Divider()
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("\(model.items.count) Live Photos")
-                        .font(.subheadline.weight(.semibold))
+                        .font(PhotoActionBarLayout.titleFont)
                     Text(selectionHint(isSelecting: isSelecting))
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(PhotoActionBarLayout.detailFont).foregroundStyle(.secondary)
                 }
                 Spacer()
                 Button {
                     showsConfirm = true
                 } label: {
-                    if isConverting {
-                        ProgressView()
-                    } else {
-                        Label("Convert \(selection.count)", systemImage: "photo")
+                    Group {
+                        if isConverting {
+                            ProgressView()
+                        } else {
+                            Label("Convert \(selection.count)", systemImage: "photo")
+                        }
                     }
+                    .photoActionButtonLabelSizing()
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(selection.isEmpty || isConverting)
             }
-            .padding(.horizontal)
-            .padding(.bottom, 6)
+            .photoActionBarSizing()
         }
         .background(.bar)
     }

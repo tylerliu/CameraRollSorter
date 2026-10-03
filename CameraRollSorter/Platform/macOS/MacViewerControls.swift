@@ -94,7 +94,12 @@ struct MacPhotoPager: View {
             .frame(width: width, height: geometry.size.height)
             .clipped()
             .overlay {
-                MacPhotoPagingSurface { delta in
+                MacPhotoPagingSurface(onMove: { step in
+                    let target = currentIndex + step
+                    guard identifiers.indices.contains(target) else { return }
+                    translation = 0
+                    currentIndex = target
+                }) { delta in
                     let atEdge = (currentIndex == 0 && delta > 0)
                         || (currentIndex == identifiers.count - 1 && delta < 0)
                     translation = atEdge ? delta * 0.25 : delta
@@ -117,16 +122,19 @@ struct MacPhotoPager: View {
 
 /// Observes precise horizontal scroll gestures over the photo, excluding momentum.
 private struct MacPhotoPagingSurface: NSViewRepresentable {
+    let onMove: (Int) -> Void
     let onChange: (CGFloat) -> Void
     let onEnd: (Bool) -> Void
 
     func makeNSView(context: Context) -> PagingView { PagingView() }
     func updateNSView(_ view: PagingView, context: Context) {
+        view.onMove = onMove
         view.onChange = onChange
         view.onEnd = onEnd
     }
 
     final class PagingView: NSView {
+        var onMove: ((Int) -> Void)?
         var onChange: ((CGFloat) -> Void)?
         var onEnd: ((Bool) -> Void)?
         private var horizontal: CGFloat = 0
@@ -139,9 +147,20 @@ private struct MacPhotoPagingSurface: NSViewRepresentable {
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             if let monitor { NSEvent.removeMonitor(monitor) }
-            monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
-                guard let self, event.window === self.window,
-                      event.hasPreciseScrollingDeltas, event.momentumPhase.isEmpty else { return event }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .keyDown]) { [weak self] event in
+                guard let self, event.window === self.window else { return event }
+                // Native viewer windows aren't SwiftUI scenes, so button shortcuts
+                // can lose routing. Handle plain arrows in the active viewer itself.
+                if event.type == .keyDown {
+                    guard self.window?.isKeyWindow == true,
+                          !self.isHiddenOrHasHiddenAncestor, !self.visibleRect.isEmpty,
+                          !(self.window?.firstResponder is NSTextView),
+                          event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty else { return event }
+                    if event.keyCode == 123 { self.onMove?(-1); return nil }
+                    if event.keyCode == 124 { self.onMove?(1); return nil }
+                    return event
+                }
+                guard event.hasPreciseScrollingDeltas, event.momentumPhase.isEmpty else { return event }
                 if event.phase.contains(.began) {
                     self.tracking = self.bounds.contains(self.convert(event.locationInWindow, from: nil))
                     self.horizontal = 0

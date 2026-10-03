@@ -97,6 +97,10 @@ struct CleanupHomeView: View {
                 }
             }
         }
+        #if os(macOS)
+        .font(.system(size: 16))
+        .environment(\.defaultMinListRowHeight, 40)
+        #endif
         // Back on the home screen: every feature fills its preview buffer again.
         .onAppear { focus(nil) }
     }
@@ -229,6 +233,24 @@ struct CategoryRow: View {
     let detail: Detail
 
     var body: some View {
+        #if os(macOS)
+        HStack(spacing: 20) {
+            Image(systemName: systemImage)
+                .font(.system(size: 30))
+                .foregroundStyle(.tint)
+                .frame(width: 64, height: 64)
+                .background(.tint.opacity(0.1), in: RoundedRectangle(cornerRadius: 14))
+            Text(title)
+                .font(.title2.weight(.medium))
+            Spacer(minLength: 20)
+            trailing
+                .font(.system(size: 16))
+                .foregroundStyle(.secondary)
+        }
+        .frame(minHeight: 84)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        #else
         HStack(spacing: 12) {
             Image(systemName: systemImage)
                 .font(.title3)
@@ -240,6 +262,7 @@ struct CategoryRow: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+        #endif
     }
 
     @ViewBuilder
