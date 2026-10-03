@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
 /// Collects each grid cell's frame (in GLOBAL space) keyed by item id, so
 /// drag-select can hit-test which cell is under the finger and edge auto-scroll
@@ -83,6 +86,9 @@ struct PhotoSelectionGrid<ActionBar: View>: View {
     // MARK: - Selection UI state (owned here; the host only sees `selection`)
     @State private var isSelecting = false
     @State private var detailID: String?
+    #if os(macOS)
+    @State private var clickSelectionAnchor: (id: String, selects: Bool)?
+    #endif
 
     // Frames of each cell in GLOBAL space, keyed by id, so a drag in select
     // mode can hit-test which cell is under the finger. Only used while
@@ -160,11 +166,21 @@ struct PhotoSelectionGrid<ActionBar: View>: View {
                     // Exit select mode but KEEP the selection so it can still be
                     // acted on (the tick stays visible in normal mode).
                     Button("Done") { isSelecting = false }
+                        #if os(macOS)
+                        .keyboardShortcut("s", modifiers: [])
+                        .disabled(detailID != nil)
+                        .help("Leave Select mode (S)")
+                        #endif
                 }
             } else {
                 ToolbarItem(placement: .platformTrailing) {
                     Button("Select") { isSelecting = true }
                         .disabled(ids.isEmpty)
+                        #if os(macOS)
+                        .keyboardShortcut("s", modifiers: [])
+                        .disabled(detailID != nil)
+                        .help("Enter Select mode (S)")
+                        #endif
                 }
             }
         }
@@ -322,7 +338,15 @@ struct PhotoSelectionGrid<ActionBar: View>: View {
             // large zoomable viewer.
             .contentShape(Rectangle())
             .onTapGesture {
+                #if os(macOS)
+                if isSelecting || NSApp.currentEvent?.modifierFlags.contains(.shift) == true {
+                    toggle(id)
+                } else {
+                    detailID = id
+                }
+                #else
                 if isSelecting { toggle(id) } else { detailID = id }
+                #endif
             }
             // Selection tick. Always shown (like the original design) so single
             // photos can be picked without entering select mode. In normal mode
@@ -485,6 +509,27 @@ struct PhotoSelectionGrid<ActionBar: View>: View {
     }
 
     private func toggle(_ id: String) {
+        #if os(macOS)
+        let modifiers = NSApp.currentEvent?.modifierFlags ?? []
+        if modifiers.contains(.shift),
+           let anchor = clickSelectionAnchor,
+           let anchorIndex = ids.firstIndex(of: anchor.id),
+           let targetIndex = ids.firstIndex(of: id) {
+            selection = PhotoSelectionLogic.paintRange(
+                anchorIndex: anchorIndex,
+                targetIndex: targetIndex,
+                base: selection,
+                ids: ids,
+                selects: anchor.selects
+            )
+            return
+        }
+        if modifiers.intersection([.command, .shift]).isEmpty {
+            // Remember the action this click performs, not the anchor's later
+            // state (which the viewer or a paint drag may change).
+            clickSelectionAnchor = (id: id, selects: !selection.contains(id))
+        }
+        #endif
         selection = PhotoSelectionLogic.toggle(id, in: selection)
     }
 }
