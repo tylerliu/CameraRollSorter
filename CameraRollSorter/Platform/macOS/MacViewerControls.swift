@@ -74,6 +74,8 @@ struct MacPhotoPager: View {
                     guard identifiers.indices.contains(target) else { return }
                     translation = 0
                     currentIndex = target
+                }, onZoom: { factor in
+                    zoomScale = min(5, max(1, zoomScale * factor))
                 }) { delta in
                     let atEdge = (currentIndex == 0 && delta > 0)
                         || (currentIndex == identifiers.count - 1 && delta < 0)
@@ -103,6 +105,7 @@ struct MacPhotoPager: View {
 private struct MacPhotoPagingSurface: NSViewRepresentable {
     let allowsPaging: Bool
     let onMove: (Int) -> Void
+    let onZoom: (CGFloat) -> Void
     let onChange: (CGFloat) -> Void
     let onEnd: (Bool) -> Void
 
@@ -110,6 +113,7 @@ private struct MacPhotoPagingSurface: NSViewRepresentable {
     func updateNSView(_ view: PagingView, context: Context) {
         view.allowsPaging = allowsPaging
         view.onMove = onMove
+        view.onZoom = onZoom
         view.onChange = onChange
         view.onEnd = onEnd
     }
@@ -117,6 +121,7 @@ private struct MacPhotoPagingSurface: NSViewRepresentable {
     final class PagingView: NSView {
         var allowsPaging = true
         var onMove: ((Int) -> Void)?
+        var onZoom: ((CGFloat) -> Void)?
         var onChange: ((CGFloat) -> Void)?
         var onEnd: ((Bool) -> Void)?
         private var horizontal: CGFloat = 0
@@ -131,13 +136,21 @@ private struct MacPhotoPagingSurface: NSViewRepresentable {
             if let monitor { NSEvent.removeMonitor(monitor) }
             monitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .keyDown]) { [weak self] event in
                 guard let self, event.window === self.window else { return event }
-                // Handle plain arrows while the photo surface is visible in
-                // the active window, without intercepting text editing.
+                // Handle viewer shortcuts only while its photo surface is
+                // visible in the active window, without intercepting text editing.
                 if event.type == .keyDown {
                     guard self.window?.isKeyWindow == true,
                           !self.isHiddenOrHasHiddenAncestor, !self.visibleRect.isEmpty,
-                          !(self.window?.firstResponder is NSTextView),
-                          event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty else { return event }
+                          !(self.window?.firstResponder is NSTextView) else { return event }
+                    let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+                    if modifiers == .command || modifiers == [.command, .shift] {
+                        switch event.charactersIgnoringModifiers {
+                        case "+", "=": self.onZoom?(1.25); return nil
+                        case "-", "_": self.onZoom?(1 / 1.25); return nil
+                        default: return event
+                        }
+                    }
+                    guard modifiers.isEmpty else { return event }
                     if event.keyCode == 123 { self.onMove?(-1); return nil }
                     if event.keyCode == 124 { self.onMove?(1); return nil }
                     return event
