@@ -36,6 +36,7 @@ class IncrementalScanModel<Item: ScanItem> {
     @ObservationIgnored private let windowStore: ScanWindowStore
     @ObservationIgnored private let batchSize: Int
     @ObservationIgnored private var scanTask: Task<Void, Never>?
+    @ObservationIgnored private var scanTaskID: UUID?
     @ObservationIgnored private var changeRelay: PhotoLibraryChangeRelay?
     // True while `scan()` is fetching the candidate set. Window changes wait
     // for it instead of cancelling it.
@@ -160,13 +161,17 @@ class IncrementalScanModel<Item: ScanItem> {
     /// near-empty roll): the surviving task always clears `isScanning`.
     private func startScan(_ work: @escaping @MainActor () async -> Void) {
         isScanning = true
-        var task: Task<Void, Never>?
-        task = Task {
+        let taskID = UUID()
+        scanTaskID = taskID
+        scanTask = Task {
             await work()
             // Only the current task settles the flag; a replacement owns it.
-            if self.scanTask == task { self.isScanning = false }
+            if self.scanTaskID == taskID {
+                self.isScanning = false
+                self.scanTask = nil
+                self.scanTaskID = nil
+            }
         }
-        scanTask = task
     }
 
     /// Classify more as the grid scrolls. `currentIndex` is the bottom-most
@@ -224,6 +229,7 @@ class IncrementalScanModel<Item: ScanItem> {
     func cancelClassification() {
         scanTask?.cancel()
         scanTask = nil
+        scanTaskID = nil
         isScanning = false
     }
 

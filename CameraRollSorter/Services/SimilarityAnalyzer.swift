@@ -22,6 +22,7 @@ actor SimilarityAnalyzer {
     // are the ones neighbors need. Invalidate when a photo's content changes.
     private var cache: [String: VNFeaturePrintObservation] = [:]
     private var cacheOrder: [String] = []
+    private var cacheGeneration = 0
     private let cacheLimit = 256
     // How often to report progress to the main actor. Bounds both callback
     // traffic and how long a finished anchor waits to show up.
@@ -30,19 +31,23 @@ actor SimilarityAnalyzer {
     /// Drop cached prints for photos that were edited or removed.
     func invalidate(_ ids: Set<String>) {
         guard !ids.isEmpty else { return }
+        cacheGeneration += 1
         for id in ids { cache[id] = nil }
         cacheOrder.removeAll { ids.contains($0) }
     }
 
     /// Drop every cached print (e.g. when a library change can't be diffed).
     func clearCache() {
+        cacheGeneration += 1
         cache = [:]
         cacheOrder = []
     }
 
-    private func featurePrint(_ identifier: String) throws -> VNFeaturePrintObservation? {
+    private func featurePrint(_ identifier: String) async throws -> VNFeaturePrintObservation? {
+        let loaded = await PhotoImageLoading.image(for: identifier, targetSize: 512)
+        try Task.checkCancellation()
         return try autoreleasepool {
-                guard let loaded = PhotoImageLoading.synchronousImage(for: identifier, targetSize: 512) else { return nil }
+                guard let loaded else { return nil }
                 // Normalize orientation without cropping (on iOS this is the
                 // same UIGraphicsImageRenderer pass as before; see PlatformImage).
                 guard let cgImage = loaded.orientationNormalizedCGImage else { return nil }
@@ -52,10 +57,15 @@ actor SimilarityAnalyzer {
 
     /// Cached print for `id`, computing it on a miss. `unavailable` is per call
     /// (photos not available locally are retried on later calls).
-    private func load(_ id: String, unavailable: inout Set<String>) throws -> VNFeaturePrintObservation? {
+    private func load(_ id: String, unavailable: inout Set<String>) async throws -> VNFeaturePrintObservation? {
         if let cached = cache[id] { return cached }
         if unavailable.contains(id) { return nil }
-        guard let value = try featurePrint(id) else { unavailable.insert(id); return nil }
+        let generation = cacheGeneration
+        guard let value = try await featurePrint(id) else { unavailable.insert(id); return nil }
+        // Awaiting PhotoKit lets invalidation run on this actor. Don't put an
+        // old image back in the cache after an edit or cleanup during the load.
+        guard generation == cacheGeneration else { return value }
+        if let cached = cache[id] { return cached }
         if cacheOrder.count >= cacheLimit { cache[cacheOrder.removeFirst()] = nil }
         cache[id] = value
         cacheOrder.append(id)
@@ -79,8 +89,8 @@ actor SimilarityAnalyzer {
         for (index, item) in work.enumerated() {
             for edge in item.comparisons {
                 try Task.checkCancellation()
-                let first = try load(edge.first, unavailable: &unavailable)
-                let second = try load(edge.second, unavailable: &unavailable)
+                let first = try await load(edge.first, unavailable: &unavailable)
+                let second = try await load(edge.second, unavailable: &unavailable)
                 if let first, let second {
                     var distance: Float = 0
                     try first.computeDistance(&distance, to: second)
