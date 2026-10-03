@@ -180,8 +180,15 @@ struct SimilarPhotosView: View {
                                         // Keep a rolling buffer scanned ahead of the viewed row,
                                         // and track which rows are on screen so we can remember
                                         // the topmost one across navigation.
-                                        .onAppear {
-                                            scrollTracker.onRowAppear(index)
+                                        .onGeometryChange(for: Bool.self) { card in
+                                            let frame = card.frame(in: .named("similarPhotosViewport"))
+                                            return frame.intersects(CGRect(origin: .zero, size: geometry.size))
+                                        } action: { visible in
+                                            if visible {
+                                                scrollTracker.onRowAppear(index)
+                                            } else {
+                                                scrollTracker.onRowDisappear(index)
+                                            }
                                             updateAnchor()
                                             reportViewPosition()
                                         }
@@ -209,12 +216,11 @@ struct SimilarPhotosView: View {
                                     RoundedRectangle(cornerRadius: 12)
                                         .strokeBorder(.secondary.opacity(0.15), lineWidth: 1)
                                 }
-                                .onAppear {
-                                    endRowVisible = true
-                                    reportViewPosition()
-                                }
-                                .onDisappear {
-                                    endRowVisible = false
+                                .onGeometryChange(for: Bool.self) { row in
+                                    let frame = row.frame(in: .named("similarPhotosViewport"))
+                                    return frame.intersects(CGRect(origin: .zero, size: geometry.size))
+                                } action: { visible in
+                                    endRowVisible = visible
                                     reportViewPosition()
                                 }
                             }
@@ -222,6 +228,7 @@ struct SimilarPhotosView: View {
                     }
                     .padding(spacing)
                 }
+                .coordinateSpace(name: "similarPhotosViewport")
                 .refreshable { library.refresh() }
                 .onAppear {
                     scrollTracker.restore(library.scrollAnchorID, proxy: proxy)
