@@ -13,6 +13,9 @@ struct PhotoChooserView: View {
     @State private var centeredPhotoID: String?
     @State private var infoPhotoID: String?
     @State private var isPreviewZoomed = false
+    #if os(macOS)
+    @State private var filmstripDragStartIndex: Int?
+    #endif
 
     /// Photos ordered so the most-similar shots are adjacent (spine ordering),
     /// making filmstrip scrubbing act as flicker comparison. Computed once in
@@ -55,13 +58,13 @@ struct PhotoChooserView: View {
                 #endif
             }
         }
-        #if os(macOS)
-        .safeAreaInset(edge: .top) { macControls }
-        #endif
         .safeAreaInset(edge: .bottom) { actionBar }
         .navigationTitle("Choose photos")
         .inlineNavigationTitle()
         .toolbar {
+            #if os(macOS)
+            ToolbarItem(placement: .principal) { macControls }
+            #endif
             ToolbarItem(placement: .platformTrailing) {
                 // One tap flips the whole group: if nothing's marked yet, mark
                 // all for deletion; otherwise reset to keep everything.
@@ -116,8 +119,6 @@ struct PhotoChooserView: View {
     #if os(macOS)
     private var macControls: some View {
         HStack(spacing: 12) {
-            Button("Back", systemImage: "chevron.backward") { dismiss() }
-            Spacer()
             Button("Previous", systemImage: "chevron.left") { movePreview(-1) }
                 .keyboardShortcut(.leftArrow, modifiers: [])
                 .disabled(burstPreviewIndex == 0)
@@ -125,7 +126,6 @@ struct PhotoChooserView: View {
             Button("Next", systemImage: "chevron.right") { movePreview(1) }
                 .keyboardShortcut(.rightArrow, modifiers: [])
                 .disabled(burstPreviewIndex >= orderedPhotos.count - 1)
-            Spacer()
             Button("Info", systemImage: "info.circle") {
                 infoPhotoID = infoPhotoID == nil ? previewID : nil
             }
@@ -139,8 +139,6 @@ struct PhotoChooserView: View {
             .disabled(previewID == nil)
         }
         .buttonStyle(.bordered)
-        .padding(12)
-        .background(.bar)
     }
     #endif
 
@@ -152,8 +150,10 @@ struct PhotoChooserView: View {
     private func movePreview(_ offset: Int) {
         let index = burstPreviewIndex + offset
         guard orderedPhotos.indices.contains(index) else { return }
-        burstPreviewIndex = index
-        centeredPhotoID = orderedPhotos[index].id
+        withAnimation(.easeOut(duration: 0.25)) {
+            burstPreviewIndex = index
+            centeredPhotoID = orderedPhotos[index].id
+        }
     }
 
     private var burstContent: some View {
@@ -170,7 +170,8 @@ struct PhotoChooserView: View {
                         }
                         #else
                         MacPhotoPager(identifiers: orderedPhotos.map(\.id),
-                                      currentIndex: $burstPreviewIndex, onClick: toggle)
+                                      currentIndex: $burstPreviewIndex, onClick: toggle,
+                                      animatesIndexChanges: false)
                         #endif
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -275,6 +276,27 @@ struct PhotoChooserView: View {
         .scrollTargetBehavior(.viewAligned(limitBehavior: .always))
         .scrollPosition(id: $centeredPhotoID, anchor: .center)
         .frame(height: filmstripThumbnailSize + 28)
+        #if os(macOS)
+        .highPriorityGesture(
+            DragGesture(minimumDistance: 3)
+                .onChanged { value in
+                    if filmstripDragStartIndex == nil {
+                        filmstripDragStartIndex = burstPreviewIndex
+                    }
+                    let step = Int((-value.translation.width / (filmstripThumbnailSize + 7)).rounded())
+                    let index = min(max(0, (filmstripDragStartIndex ?? burstPreviewIndex) + step),
+                                    orderedPhotos.count - 1)
+                    guard orderedPhotos.indices.contains(index) else { return }
+                    var transaction = Transaction(animation: nil)
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) {
+                        burstPreviewIndex = index
+                        centeredPhotoID = orderedPhotos[index].id
+                    }
+                }
+                .onEnded { _ in filmstripDragStartIndex = nil }
+        )
+        #endif
         .task(id: sequence.id) {
             guard centeredPhotoID == nil, let firstID = orderedPhotos.first?.id else { return }
             await Task.yield()

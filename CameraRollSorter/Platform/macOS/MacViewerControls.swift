@@ -32,16 +32,42 @@ struct MacViewerWindow<Content: View>: NSViewRepresentable {
             }
             coordinator.window?.makeKeyAndOrderFront(nil)
         } else {
-            coordinator.window?.close()
+            coordinator.closeViewer()
         }
     }
-    static func dismantleNSView(_ view: NSView, coordinator: Coordinator) { coordinator.window?.close() }
+    static func dismantleNSView(_ view: NSView, coordinator: Coordinator) {
+        coordinator.closeViewer()
+    }
+    @MainActor
     final class Coordinator: NSObject, NSWindowDelegate {
         var window: NSWindow?
         var onClose: (() -> Void)?
-        func windowWillClose(_ notification: Notification) {
+
+        func closeViewer() {
+            // The presenting SwiftUI hierarchy may already be tearing down.
+            // Don't write its binding from the viewer's close delegate, and
+            // retain the native window until AppKit has finished closing it.
+            onClose = nil
+            guard let closingWindow = window else { return }
+            closingWindow.delegate = nil
+            closingWindow.close()
+            closingWindow.contentView = nil
             window = nil
-            onClose?()
+        }
+
+        func windowWillClose(_ notification: Notification) {
+            guard let closingWindow = notification.object as? NSWindow else { return }
+            // Releasing our last window reference or updating SwiftUI state
+            // inside AppKit's close callback can re-enter window teardown.
+            Task { @MainActor [weak self, closingWindow] in
+                guard let self, self.window === closingWindow else { return }
+                let completion = self.onClose
+                self.onClose = nil
+                closingWindow.delegate = nil
+                closingWindow.contentView = nil
+                self.window = nil
+                completion?()
+            }
         }
     }
 }
@@ -77,6 +103,7 @@ struct MacPhotoPager: View {
     let identifiers: [String]
     @Binding var currentIndex: Int
     var onClick: ((String) -> Void)? = nil
+    var animatesIndexChanges = true
     @State private var translation: CGFloat = 0
 
     var body: some View {
@@ -116,7 +143,10 @@ struct MacPhotoPager: View {
                 }
             }
         }
-        .animation(.easeOut(duration: 0.25), value: currentIndex)
+        // Comparison viewers choose animation at the interaction site. A
+        // constant trigger preserves those explicit animations while default
+        // viewers animate every page change, including keyboard navigation.
+        .animation(.easeOut(duration: 0.25), value: animatesIndexChanges ? currentIndex : -1)
     }
 }
 
