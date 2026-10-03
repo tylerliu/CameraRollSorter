@@ -5,7 +5,7 @@ import SwiftUI
 /// `ZoomablePhotoView` for pinch-zoom, pan, and Live Photo playback. Generic so
 /// any category list (Live → Still, Blurry, …) can present a large view.
 ///
-/// Presented as a sheet/full-screen cover. Paging is disabled while an image is
+/// Presented full-screen on iOS and in the main navigation on Mac. Paging is disabled while an image is
 /// zoomed so panning doesn't fight the pager.
 struct PhotoDetailPager: View {
     let identifiers: [String]
@@ -37,57 +37,77 @@ struct PhotoDetailPager: View {
         self.showsNeighbors = showsNeighbors
     }
 
-    var body: some View {
-        NavigationStack {
-            HStack(spacing: 0) {
-                viewer
-                #if os(macOS)
-                if infoID != nil, let id = currentID ?? identifiers.first {
-                    Divider()
-                    MacPhotoInfoPane(identifier: id) { infoID = nil }
-                }
-                #endif
-            }
-            .background(Color.black.ignoresSafeArea())
-            .safeAreaInset(edge: .bottom) {
-                // Nearest-in-time neighbors for the current photo. Hidden while
-                // zoomed so it doesn't fight the pinch/pan surface.
-                if showsNeighbors, !isZoomed, let id = currentID ?? identifiers.first {
-                    NeighborStrip(identifier: id, onPeek: { peekID = $0 })
-                        .background(.ultraThinMaterial)
-                }
-            }
+    @ViewBuilder
+    private var presentation: some View {
+        #if os(iOS)
+        NavigationStack { detailContent }
+        #else
+        detailContent
+        #endif
+    }
+
+    private var detailContent: some View {
+        HStack(spacing: 0) {
+            viewer
             #if os(macOS)
-            .safeAreaInset(edge: .top) { macControls }
-            #endif
-            .toolbar {
-                #if os(iOS)
-                ToolbarItem(placement: .platformLeading) {
-                    Button("Done") { dismiss() }
-                }
-                ToolbarItem(placement: .principal) {
-                    if let position {
-                        Text("\(position) of \(identifiers.count)")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                ToolbarItem(placement: .platformTrailing) {
-                    if selection != nil { selectionToggle }
-                }
-                #endif
-            }
-            .visibleNavigationBarBackground()
-            #if os(iOS)
-            .sheet(isPresented: infoPresented) {
-                if let infoID {
-                    PhotoInfoView(identifier: infoID)
-                        .presentationDetents([.medium, .large])
-                        .presentationDragIndicator(.visible)
-                }
+            if infoID != nil, let id = currentID ?? identifiers.first {
+                Divider()
+                MacPhotoInfoPane(identifier: id) { infoID = nil }
             }
             #endif
         }
+        .background(Color.black.ignoresSafeArea())
+        .safeAreaInset(edge: .bottom) {
+            // Nearest-in-time neighbors for the current photo. Hidden while
+            // zoomed so it doesn't fight the pinch/pan surface.
+            if showsNeighbors, !isZoomed, let id = currentID ?? identifiers.first {
+                NeighborStrip(identifier: id, onPeek: { peekID = $0 })
+                    .background(.ultraThinMaterial)
+            }
+        }
+        #if os(macOS)
+        .navigationBarBackButtonHidden(true)
+        #endif
+        .toolbar {
+            #if os(macOS)
+            ToolbarItem(placement: .platformLeading) {
+                Button { dismiss() } label: {
+                    Label("Back", systemImage: "chevron.left")
+                }
+                .help("Back to photo grid")
+            }
+            ToolbarItem(placement: .principal) { macControls }
+            #endif
+            #if os(iOS)
+            ToolbarItem(placement: .platformLeading) {
+                Button("Done") { dismiss() }
+            }
+            ToolbarItem(placement: .principal) {
+                if let position {
+                    Text("\(position) of \(identifiers.count)")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            ToolbarItem(placement: .platformTrailing) {
+                if selection != nil { selectionToggle }
+            }
+            #endif
+        }
+        .visibleNavigationBarBackground()
+        #if os(iOS)
+        .sheet(isPresented: infoPresented) {
+            if let infoID {
+                PhotoInfoView(identifier: infoID)
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+            }
+        }
+        #endif
+    }
+
+    var body: some View {
+        presentation
         // Press-and-hold peek: a large, screen-centered preview that blurs the
         // whole screen behind it. Lives at the top level so it covers the
         // toolbar and neighbor strip, not just the image area.
@@ -101,7 +121,6 @@ struct PhotoDetailPager: View {
     #if os(macOS)
     private var macControls: some View {
         HStack(spacing: 16) {
-            Spacer()
             Button { move(-1) } label: { Image(systemName: "chevron.left") }
                 .keyboardShortcut(.leftArrow, modifiers: [])
                 .disabled(currentIndex == nil || currentIndex == 0)
@@ -111,7 +130,6 @@ struct PhotoDetailPager: View {
                 .keyboardShortcut(.rightArrow, modifiers: [])
                 .disabled(currentIndex == nil || currentIndex == identifiers.count - 1)
                 .help("Next photo")
-            Spacer()
             Button("Info", systemImage: "info.circle") {
                 infoID = infoID == nil ? (currentID ?? identifiers.first) : nil
             }
@@ -120,8 +138,6 @@ struct PhotoDetailPager: View {
             if selection != nil { selectionToggle }
         }
         .buttonStyle(.bordered)
-        .padding(12)
-        .background(.bar)
     }
     #endif
 

@@ -95,7 +95,7 @@ extension View {
         #endif
     }
 
-    /// Full-screen cover on iOS; a separate resizable viewer window on macOS.
+    /// Full-screen cover on iOS; navigation in the existing window on macOS.
     func platformFullScreenCover<Content: View>(
         isPresented: Binding<Bool>,
         @ViewBuilder content: @escaping () -> Content
@@ -103,10 +103,7 @@ extension View {
         #if os(iOS)
         fullScreenCover(isPresented: isPresented, content: content)
         #else
-        background {
-            MacViewerWindow(isPresented: isPresented, content: content)
-                .frame(width: 0, height: 0)
-        }
+        navigationDestination(isPresented: isPresented, destination: content)
         #endif
     }
 }

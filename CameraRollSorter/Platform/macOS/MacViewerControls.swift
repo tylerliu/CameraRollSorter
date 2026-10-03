@@ -2,76 +2,6 @@
 import AppKit
 import SwiftUI
 
-struct MacViewerWindow<Content: View>: NSViewRepresentable {
-    @Binding var isPresented: Bool
-    let content: () -> Content
-
-    func makeNSView(context: Context) -> NSView { NSView() }
-    func makeCoordinator() -> Coordinator { Coordinator() }
-    func updateNSView(_ view: NSView, context: Context) {
-        let coordinator = context.coordinator
-        coordinator.onClose = { isPresented = false }
-        if isPresented {
-            if coordinator.window == nil {
-                let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 760),
-                                      styleMask: [.titled, .closable, .miniaturizable, .resizable],
-                                      backing: .buffered, defer: false)
-                window.title = "Photo viewer"
-                window.isReleasedWhenClosed = false
-                window.collectionBehavior = [.fullScreenPrimary]
-                window.minSize = NSSize(width: 760, height: 560)
-                window.delegate = coordinator
-                coordinator.window = window
-                window.center()
-            }
-            let root = AnyView(content())
-            if let hosting = coordinator.window?.contentView as? NSHostingView<AnyView> {
-                hosting.rootView = root
-            } else {
-                coordinator.window?.contentView = NSHostingView(rootView: root)
-            }
-            coordinator.window?.makeKeyAndOrderFront(nil)
-        } else {
-            coordinator.closeViewer()
-        }
-    }
-    static func dismantleNSView(_ view: NSView, coordinator: Coordinator) {
-        coordinator.closeViewer()
-    }
-    @MainActor
-    final class Coordinator: NSObject, NSWindowDelegate {
-        var window: NSWindow?
-        var onClose: (() -> Void)?
-
-        func closeViewer() {
-            // The presenting SwiftUI hierarchy may already be tearing down.
-            // Don't write its binding from the viewer's close delegate, and
-            // retain the native window until AppKit has finished closing it.
-            onClose = nil
-            guard let closingWindow = window else { return }
-            closingWindow.delegate = nil
-            closingWindow.close()
-            closingWindow.contentView = nil
-            window = nil
-        }
-
-        func windowWillClose(_ notification: Notification) {
-            guard let closingWindow = notification.object as? NSWindow else { return }
-            // Releasing our last window reference or updating SwiftUI state
-            // inside AppKit's close callback can re-enter window teardown.
-            Task { @MainActor [weak self, closingWindow] in
-                guard let self, self.window === closingWindow else { return }
-                let completion = self.onClose
-                self.onClose = nil
-                closingWindow.delegate = nil
-                closingWindow.contentView = nil
-                self.window = nil
-                completion?()
-            }
-        }
-    }
-}
-
 /// An inline inspector with enough width and height for readable metadata.
 struct MacPhotoInfoPane: View {
     let identifier: String
@@ -179,8 +109,8 @@ private struct MacPhotoPagingSurface: NSViewRepresentable {
             if let monitor { NSEvent.removeMonitor(monitor) }
             monitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .keyDown]) { [weak self] event in
                 guard let self, event.window === self.window else { return event }
-                // Native viewer windows aren't SwiftUI scenes, so button shortcuts
-                // can lose routing. Handle plain arrows in the active viewer itself.
+                // Handle plain arrows while the photo surface is visible in
+                // the active window, without intercepting text editing.
                 if event.type == .keyDown {
                     guard self.window?.isKeyWindow == true,
                           !self.isHiddenOrHasHiddenAncestor, !self.visibleRect.isEmpty,
