@@ -279,7 +279,9 @@ struct PhotoSelectionGrid<ActionBar: View>: View {
             // Lock the ScrollView the instant a drag is judged a paint, so the
             // content stops scrolling and only painting continues. A vertical
             // drag leaves it unlocked, so it scrolls normally.
+            #if os(iOS)
             .scrollDisabled(scrollLocked)
+            #endif
             // Capture the viewport frame (global space) for edge auto-scroll.
             .background(
                 GeometryReader { geo in
@@ -299,9 +301,9 @@ struct PhotoSelectionGrid<ActionBar: View>: View {
             // vertical drag is a scroll → we don't paint and leave it scrolling.
             .simultaneousGesture(isSelecting ? dragSelectGesture : nil)
             // Drive edge auto-scroll while a paint drag sits near an edge.
-            .onChange(of: autoScrollDir) { _, dir in
-                guard dir != 0 else { return }
-                Task { await runAutoScroll(proxy: proxy) }
+            .task(id: autoScrollDir) {
+                guard autoScrollDir != 0 else { return }
+                await runAutoScroll(proxy: proxy)
             }
             // On first appear, jump back to the remembered cell.
             .onAppear { scrollTracker.restore(scrollAnchorID, proxy: proxy) }
@@ -383,7 +385,7 @@ struct PhotoSelectionGrid<ActionBar: View>: View {
                 guard dragIsPaint == true else { return }
 
                 dragLocation = value.location
-                if dragAnchorIndex == nil, let index = itemIndex(at: value.location) {
+                if dragAnchorIndex == nil, let index = itemIndex(at: value.startLocation) {
                     dragAnchorIndex = index
                     dragBaseSelection = selection
                     dragSelects = PhotoSelectionLogic.dragSelects(
@@ -424,17 +426,24 @@ struct PhotoSelectionGrid<ActionBar: View>: View {
     /// tick at the margin boundary to `maxScrollStep` rows at the very edge.
     private func runAutoScroll(proxy: ScrollViewProxy) async {
         let maxScrollStep = 8
-        while autoScrollDir != 0 {
+        while autoScrollDir != 0 && !Task.isCancelled {
             let dir = autoScrollDir
             // 1 row at intensity 0 → maxScrollStep rows at intensity 1.
             let step = PhotoSelectionLogic.autoScrollStep(
                 intensity: autoScrollIntensity, maxStep: maxScrollStep
             )
+            // Lazy cells can remain "appeared" far outside the viewport.
+            // Use actual intersecting frames; never fall back to index zero.
+            let visibleIDs = Set(cellFrameStore.frames.compactMap { id, frame in
+                frame.intersects(viewportFrame) ? id : nil
+            })
+            let visibleIndices = ids.indices.filter { visibleIDs.contains(ids[$0]) }
+            guard let first = visibleIndices.first, let last = visibleIndices.last else { return }
             let targetIndex: Int
             if dir < 0 {
-                targetIndex = max(0, (scrollTracker.minVisibleIndex ?? 0) - step)
+                targetIndex = max(0, first - step)
             } else {
-                targetIndex = min(ids.count - 1, (scrollTracker.maxVisibleIndex ?? 0) + step)
+                targetIndex = min(ids.count - 1, last + step)
             }
             if ids.indices.contains(targetIndex) {
                 withAnimation(.linear(duration: 0.2)) {
@@ -446,7 +455,11 @@ struct PhotoSelectionGrid<ActionBar: View>: View {
                 // snapping back to the (now off-screen) finger cell.
                 paintRange(toIndex: targetIndex)
             }
-            try? await Task.sleep(nanoseconds: 200_000_000)
+            do {
+                try await Task.sleep(nanoseconds: 200_000_000)
+            } catch {
+                return
+            }
         }
     }
 
