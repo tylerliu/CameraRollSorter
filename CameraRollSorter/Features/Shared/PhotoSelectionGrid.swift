@@ -335,7 +335,8 @@ struct PhotoSelectionGrid<ActionBar: View>: View {
                     .font(.title3)
                     .padding(5)
                 if isSelecting {
-                    tick
+                    // Let the whole tile handle taps and paint drags here.
+                    tick.allowsHitTesting(false)
                 } else {
                     Button { toggle(id) } label: { tick.contentShape(Circle()) }
                         .buttonStyle(.plain)
