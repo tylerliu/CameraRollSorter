@@ -174,7 +174,7 @@ struct ZoomablePhotoView: View {
             options.resizeMode = .exact
             PHImageManager.default().requestImage(
                 for: asset,
-                targetSize: CGSize(width: 1024, height: 1024),
+                targetSize: PHImageManagerMaximumSize,
                 contentMode: .aspectFit,
                 options: options
             ) { image, info in

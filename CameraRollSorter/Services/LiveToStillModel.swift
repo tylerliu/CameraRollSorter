@@ -62,11 +62,11 @@ final class LiveToStillModel: IncrementalScanModel<LivePhotoItem> {
         }
 
         // Phase 1 — gather (asset, still data). Reads only; no prompts.
-        var jobs: [(asset: PHAsset, data: Data)] = []
+        var jobs: [(asset: PHAsset, data: Data, originalFilename: String)] = []
         for id in identifiers {
             guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [id], options: nil).firstObject else { continue }
-            let data = try await stillImageData(for: asset)
-            jobs.append((asset, data))
+            let still = try await stillImageData(for: asset)
+            jobs.append((asset, still.data, still.originalFilename))
         }
         guard !jobs.isEmpty else { return 0 }
 
@@ -82,7 +82,7 @@ final class LiveToStillModel: IncrementalScanModel<LivePhotoItem> {
     /// Full-resolution still-image data for the Live Photo's photo resource.
     /// This data already carries the original EXIF/GPS metadata, so re-saving it
     /// verbatim preserves metadata without re-encoding.
-    private func stillImageData(for asset: PHAsset) async throws -> Data {
+    private func stillImageData(for asset: PHAsset) async throws -> (data: Data, originalFilename: String) {
         let resources = PHAssetResource.assetResources(for: asset)
         // The still component of a Live Photo is the .photo (or .fullSizePhoto) resource.
         let photoResource = resources.first { $0.type == .fullSizePhoto }
@@ -106,7 +106,7 @@ final class LiveToStillModel: IncrementalScanModel<LivePhotoItem> {
                     } else if buffer.isEmpty {
                         continuation.resume(throwing: LiveToStillError.stillDataUnavailable)
                     } else {
-                        continuation.resume(returning: buffer)
+                        continuation.resume(returning: (buffer, resource.originalFilename))
                     }
                 }
             )
@@ -117,12 +117,13 @@ final class LiveToStillModel: IncrementalScanModel<LivePhotoItem> {
     /// originals — in a SINGLE change block. Batching the deletions into one
     /// `deleteAssets` call means the system shows just one confirmation for the
     /// whole conversion, not one per photo.
-    private func replaceWithStills(_ jobs: [(asset: PHAsset, data: Data)]) async throws {
+    private func replaceWithStills(_ jobs: [(asset: PHAsset, data: Data, originalFilename: String)]) async throws {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             PHPhotoLibrary.shared().performChanges({
                 for job in jobs {
                     let creation = PHAssetCreationRequest.forAsset()
                     let resourceOptions = PHAssetResourceCreationOptions()
+                    resourceOptions.originalFilename = job.originalFilename
                     // Pass the still data verbatim (no UIImage round-trip) so
                     // EXIF and GPS metadata survive intact.
                     creation.addResource(with: .photo, data: job.data, options: resourceOptions)
