@@ -72,94 +72,170 @@ struct SimilarPhotosView: View {
         .inlineNavigationTitle()
     }
 
-    private var groupThumbnailSize: CGFloat {
+    private var minimumCardWidth: CGFloat {
         #if os(macOS)
-        144
+            220
         #else
-        72
+            160
         #endif
     }
 
-    private var list: some View {
-        ScrollViewReader { proxy in
-        List {
-            Section {
-                Text("Similarity distance ≤ \(library.threshold, format: .number.precision(.fractionLength(2))) · change in review settings")
-                    .font(.caption).foregroundStyle(.secondary)
-                if let error = library.analysisError { Text(error).foregroundStyle(.secondary) }
+    private var cardSpacing: CGFloat {
+        #if os(macOS)
+            12
+        #else
+            5
+        #endif
+    }
+
+    private var summaryPanel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Similarity distance ≤ \(library.threshold, format: .number.precision(.fractionLength(2))) · change in review settings")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            if let error = library.analysisError {
+                Text(error).font(.subheadline).foregroundStyle(.secondary)
             }
-            Section {
-                // Count is shown as soon as scanning starts — no "X of N"
-                // progress, which is meaningless for a partial scan.
-                if library.isScanning || library.hasScanned || !library.groups.isEmpty {
-                    HStack(spacing: 6) {
-                        Text(countLabel)
-                        if library.hasMoreToScan {
-                            Text("&")
-                            ProgressView()
-                                .controlSize(.small)
-                        }
+            if library.isScanning || library.hasScanned || !library.groups.isEmpty {
+                HStack(spacing: 8) {
+                    Text(countLabel).font(.headline)
+                    if library.hasMoreToScan {
+                        ProgressView().controlSize(.small)
                     }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
                 }
-                if library.hasScanned || !library.groups.isEmpty {
-                    if library.hasScanned && library.groups.isEmpty && !library.isScanning {
-                        ContentUnavailableView(
-                            "No groups found",
-                            systemImage: "photo.stack",
-                            description: Text(library.analysisError == nil
-                                ? "No measured matches met the distance threshold. Try adjusting it in settings. Photos unavailable locally cannot be matched."
-                                : "Similarity analysis did not finish. Pull to refresh to retry.")
-                        )
-                    }
-                    ForEach(Array(library.groups.enumerated()), id: \.element.id) { index, group in
-                        NavigationLink {
-                            PhotoChooserView(sequence: group, library: library)
-                        } label: {
-                            HStack {
-                                PhotoThumbnail(identifier: group.photos[0].id, size: groupThumbnailSize)
-                                VStack(alignment: .leading) {
-                                    Text("\(group.photos.count) similar photos")
-                                    Text(Self.rowDate(group.photos[0].date))
-                                        .font(.caption).foregroundStyle(.secondary)
-                                    Text("Choose photos to keep").font(.caption)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.background, in: RoundedRectangle(cornerRadius: 12))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(.secondary.opacity(0.15), lineWidth: 1)
+        }
+    }
+
+    private var list: some View {
+        GeometryReader { geometry in
+            let spacing = cardSpacing
+            let availableWidth = max(1, geometry.size.width - spacing * 2)
+            let columnCount = max(1, Int((availableWidth + spacing) / (minimumCardWidth + spacing)))
+            let cardWidth = (availableWidth - spacing * CGFloat(columnCount - 1)) / CGFloat(columnCount)
+            // Keep requests stable while resizing within the same column count.
+            let requestSize = minimumCardWidth * CGFloat(columnCount + 1) / CGFloat(columnCount)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        summaryPanel
+                        VStack(alignment: .leading, spacing: 8) {
+                            if library.hasScanned || !library.groups.isEmpty {
+                                if library.hasScanned && library.groups.isEmpty && !library.isScanning {
+                                    ContentUnavailableView(
+                                        "No groups found",
+                                        systemImage: "photo.stack",
+                                        description: Text(
+                                            library.analysisError == nil
+                                                ? "No measured matches met the distance threshold. Try adjusting it in settings. Photos unavailable locally cannot be matched."
+                                                : "Similarity analysis did not finish. Pull to refresh to retry.")
+                                    )
+                                }
+                                LazyVGrid(
+                                    columns: Array(
+                                        repeating: GridItem(.fixed(cardWidth), spacing: spacing), count: columnCount),
+                                    spacing: spacing
+                                ) {
+                                    ForEach(Array(library.groups.enumerated()), id: \.element.id) { index, group in
+                                        NavigationLink {
+                                            PhotoChooserView(sequence: group, library: library)
+                                        } label: {
+                                            VStack(alignment: .leading, spacing: 0) {
+                                                PhotoThumbnail(
+                                                    identifier: group.photos[0].id,
+                                                    size: cardWidth,
+                                                    requestSize: requestSize,
+                                                    fill: true,
+                                                    cornerRadius: 0
+                                                )
+                                                VStack(alignment: .leading, spacing: 4) {
+                                                    Text("\(group.photos.count) similar photos")
+                                                        .font(.headline)
+                                                    Text(Self.rowDate(group.photos[0].date))
+                                                        .font(.caption).foregroundStyle(.secondary)
+                                                    Text("Choose photos to keep")
+                                                        .font(.caption).foregroundStyle(.secondary)
+                                                }
+                                                .padding(12)
+                                                .frame(maxWidth: .infinity, alignment: .leading)
+                                            }
+                                            .frame(width: cardWidth, alignment: .leading)
+                                            .background(.background)
+                                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                                            .overlay {
+                                                RoundedRectangle(cornerRadius: 12)
+                                                    .strokeBorder(.secondary.opacity(0.15), lineWidth: 1)
+                                            }
+                                            .contentShape(RoundedRectangle(cornerRadius: 12))
+                                        }
+                                        .buttonStyle(.plain)
+                                        .id(group.id)
+                                        // Keep a rolling buffer scanned ahead of the viewed row,
+                                        // and track which rows are on screen so we can remember
+                                        // the topmost one across navigation.
+                                        .onGeometryChange(for: Bool.self) { card in
+                                            let frame = card.frame(in: .named("similarPhotosViewport"))
+                                            return frame.intersects(CGRect(origin: .zero, size: geometry.size))
+                                        } action: { visible in
+                                            if visible {
+                                                scrollTracker.onRowAppear(index)
+                                            } else {
+                                                scrollTracker.onRowDisappear(index)
+                                            }
+                                            updateAnchor()
+                                            reportViewPosition()
+                                        }
+                                        .onDisappear {
+                                            scrollTracker.onRowDisappear(index)
+                                            updateAnchor()
+                                            reportViewPosition()
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Bottom status row: when more remains, show a spinner and keep
+                            // scanning automatically — reaching the bottom resumes a paused
+                            // scan, so there's no manual "scan more" step.
+                            if library.hasMoreToScan {
+                                HStack {
+                                    ProgressView()
+                                    Text("Scanning more…").font(.subheadline).foregroundStyle(.secondary)
+                                }
+                                .padding(14)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(.background, in: RoundedRectangle(cornerRadius: 12))
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 12)
+                                        .strokeBorder(.secondary.opacity(0.15), lineWidth: 1)
+                                }
+                                .onGeometryChange(for: Bool.self) { row in
+                                    let frame = row.frame(in: .named("similarPhotosViewport"))
+                                    return frame.intersects(CGRect(origin: .zero, size: geometry.size))
+                                } action: { visible in
+                                    endRowVisible = visible
+                                    reportViewPosition()
                                 }
                             }
                         }
-                        .id(group.id)
-                        // Keep a rolling buffer scanned ahead of the viewed row,
-                        // and track which rows are on screen so we can remember
-                        // the topmost one across navigation.
-                        .onAppear {
-                            scrollTracker.onRowAppear(index)
-                            updateAnchor()
-                            reportViewPosition()
-                        }
-                        .onDisappear {
-                            scrollTracker.onRowDisappear(index)
-                            updateAnchor()
-                            reportViewPosition()
-                        }
                     }
+                    .padding(spacing)
                 }
-
-                // Bottom status row: when more remains, show a spinner and keep
-                // scanning automatically — reaching the bottom resumes a paused
-                // scan, so there's no manual "scan more" step.
-                if library.hasMoreToScan {
-                    HStack { ProgressView(); Text("Scanning more…").font(.caption).foregroundStyle(.secondary) }
-                        .onAppear { endRowVisible = true; reportViewPosition() }
-                        .onDisappear { endRowVisible = false; reportViewPosition() }
+                .coordinateSpace(name: "similarPhotosViewport")
+                .refreshable { library.refresh() }
+                .onAppear {
+                    scrollTracker.restore(library.scrollAnchorID, proxy: proxy)
+                    library.setListActive(true)
                 }
+                .onDisappear { library.setListActive(false) }
             }
-        }
-        .refreshable { library.refresh() }
-        .onAppear {
-            scrollTracker.restore(library.scrollAnchorID, proxy: proxy)
-            library.setListActive(true)
-        }
-        .onDisappear { library.setListActive(false) }
         }
     }
 }

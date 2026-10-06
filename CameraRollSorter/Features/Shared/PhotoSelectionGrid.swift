@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
 /// Collects each grid cell's frame (in GLOBAL space) keyed by item id, so
 /// drag-select can hit-test which cell is under the finger and edge auto-scroll
@@ -83,6 +86,9 @@ struct PhotoSelectionGrid<ActionBar: View>: View {
     // MARK: - Selection UI state (owned here; the host only sees `selection`)
     @State private var isSelecting = false
     @State private var detailID: String?
+    #if os(macOS)
+    @State private var clickSelectionAnchor: (id: String, selects: Bool)?
+    #endif
 
     // Frames of each cell in GLOBAL space, keyed by id, so a drag in select
     // mode can hit-test which cell is under the finger. Only used while
@@ -160,11 +166,21 @@ struct PhotoSelectionGrid<ActionBar: View>: View {
                     // Exit select mode but KEEP the selection so it can still be
                     // acted on (the tick stays visible in normal mode).
                     Button("Done") { isSelecting = false }
+                        #if os(macOS)
+                        .keyboardShortcut("s", modifiers: [])
+                        .disabled(detailID != nil)
+                        .help("Leave Select mode (S)")
+                        #endif
                 }
             } else {
                 ToolbarItem(placement: .platformTrailing) {
                     Button("Select") { isSelecting = true }
                         .disabled(ids.isEmpty)
+                        #if os(macOS)
+                        .keyboardShortcut("s", modifiers: [])
+                        .disabled(detailID != nil)
+                        .help("Enter Select mode (S)")
+                        #endif
                 }
             }
         }
@@ -227,17 +243,19 @@ struct PhotoSelectionGrid<ActionBar: View>: View {
         GeometryReader { geometry in
             let availableWidth = max(1, geometry.size.width)
             let count = max(1, Int(availableWidth / targetTileSize))
-            let tileSize = availableWidth / CGFloat(count)
+            let spacing: CGFloat = count < 10 ? 2 : 0
+            let cornerRadius: CGFloat = count < 10 ? 4 : 0
+            let tileSize = (availableWidth - spacing * CGFloat(count - 1)) / CGFloat(count)
             // With this column count, tiles stay below the next-column threshold.
             // Request that upper bound once rather than on every resize tick.
             let requestSize = targetTileSize * CGFloat(count + 1) / CGFloat(count)
             gridContent(tileSize: tileSize, requestSize: requestSize, gridColumns: Array(
-                repeating: GridItem(.flexible(), spacing: 0), count: count
-            ), spacing: 0, inset: 0)
+                repeating: GridItem(.fixed(tileSize), spacing: spacing), count: count
+            ), spacing: spacing, inset: 0, cornerRadius: cornerRadius)
         }
     }
 
-    private func gridContent(tileSize: CGFloat, requestSize: CGFloat, gridColumns: [GridItem], spacing: CGFloat, inset: CGFloat) -> some View {
+    private func gridContent(tileSize: CGFloat, requestSize: CGFloat, gridColumns: [GridItem], spacing: CGFloat, inset: CGFloat, cornerRadius: CGFloat) -> some View {
         ScrollViewReader { proxy in
             ScrollView {
                 // Lazy outer stack so the bottom status row's onAppear/
@@ -247,7 +265,7 @@ struct PhotoSelectionGrid<ActionBar: View>: View {
                 LazyVStack(spacing: 0) {
                     LazyVGrid(columns: gridColumns, spacing: spacing) {
                         ForEach(Array(ids.enumerated()), id: \.element) { index, id in
-                            cell(for: id, size: tileSize, requestSize: requestSize).id(id)
+                            cell(for: id, size: tileSize, requestSize: requestSize, cornerRadius: cornerRadius).id(id)
                                 // Report the viewer's position so the scan keeps
                                 // a rolling buffer ahead of it, and track the
                                 // topmost visible cell so scroll position
@@ -310,19 +328,27 @@ struct PhotoSelectionGrid<ActionBar: View>: View {
         }
     }
 
-    private func cell(for id: String, size: CGFloat, requestSize: CGFloat) -> some View {
+    private func cell(for id: String, size: CGFloat, requestSize: CGFloat, cornerRadius: CGFloat) -> some View {
         let selected = selection.contains(id)
-        return PhotoThumbnail(identifier: id, size: size, requestSize: requestSize, fill: true, cornerRadius: 0)
+        return PhotoThumbnail(identifier: id, size: size, requestSize: requestSize, fill: true, cornerRadius: cornerRadius)
             .overlay {
                 if selected {
-                    RoundedRectangle(cornerRadius: 0).strokeBorder(.tint, lineWidth: 3)
+                    RoundedRectangle(cornerRadius: cornerRadius).strokeBorder(.tint, lineWidth: 3)
                 }
             }
             // Tap the body: in select mode toggle the tick; otherwise open the
             // large zoomable viewer.
             .contentShape(Rectangle())
             .onTapGesture {
+                #if os(macOS)
+                if isSelecting || NSApp.currentEvent?.modifierFlags.contains(.shift) == true {
+                    toggle(id)
+                } else {
+                    detailID = id
+                }
+                #else
                 if isSelecting { toggle(id) } else { detailID = id }
+                #endif
             }
             // Selection tick. Always shown (like the original design) so single
             // photos can be picked without entering select mode. In normal mode
@@ -485,6 +511,27 @@ struct PhotoSelectionGrid<ActionBar: View>: View {
     }
 
     private func toggle(_ id: String) {
+        #if os(macOS)
+        let modifiers = NSApp.currentEvent?.modifierFlags ?? []
+        if modifiers.contains(.shift),
+           let anchor = clickSelectionAnchor,
+           let anchorIndex = ids.firstIndex(of: anchor.id),
+           let targetIndex = ids.firstIndex(of: id) {
+            selection = PhotoSelectionLogic.paintRange(
+                anchorIndex: anchorIndex,
+                targetIndex: targetIndex,
+                base: selection,
+                ids: ids,
+                selects: anchor.selects
+            )
+            return
+        }
+        if modifiers.intersection([.command, .shift]).isEmpty {
+            // Remember the action this click performs, not the anchor's later
+            // state (which the viewer or a paint drag may change).
+            clickSelectionAnchor = (id: id, selects: !selection.contains(id))
+        }
+        #endif
         selection = PhotoSelectionLogic.toggle(id, in: selection)
     }
 }

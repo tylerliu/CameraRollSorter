@@ -14,6 +14,7 @@ struct PhotoChooserView: View {
     @State private var infoPhotoID: String?
     @State private var isPreviewZoomed = false
     #if os(macOS)
+    @State private var macZoomScale: CGFloat = 1
     @State private var filmstripDragStartIndex: Int?
     #endif
 
@@ -119,6 +120,7 @@ struct PhotoChooserView: View {
     #if os(macOS)
     private var macControls: some View {
         HStack(spacing: 12) {
+            MacPhotoZoomControl(scale: $macZoomScale)
             Button("Previous", systemImage: "chevron.left") { movePreview(-1) }
                 .keyboardShortcut(.leftArrow, modifiers: [])
                 .disabled(burstPreviewIndex == 0)
@@ -170,7 +172,7 @@ struct PhotoChooserView: View {
                         }
                         #else
                         MacPhotoPager(identifiers: orderedPhotos.map(\.id),
-                                      currentIndex: $burstPreviewIndex, onClick: toggle,
+                                      currentIndex: $burstPreviewIndex, zoomScale: $macZoomScale, onClick: toggle,
                                       animatesIndexChanges: false)
                         #endif
                     }
