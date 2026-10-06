@@ -19,9 +19,13 @@ struct PhotoDetailPager: View {
     /// is shown beneath the image. Used by the Low-aesthetic flow so the user
     /// can spot a better nearby shot; off for other categories.
     let showsNeighbors: Bool
+    let title: LocalizedStringKey
+    let onDeletePhoto: ((String) -> Void)?
+    let deletionEnabled: Bool
     @Environment(\.dismiss) private var dismiss
     @State private var isZoomed = false
     #if os(macOS)
+    @State private var macViewerWidth: CGFloat = 800
     @State private var macZoomScale: CGFloat = 1
     #endif
     @State private var infoID: String?
@@ -32,12 +36,18 @@ struct PhotoDetailPager: View {
         identifiers: [String],
         currentID: Binding<String?>,
         selection: Binding<Set<String>?> = .constant(nil),
-        showsNeighbors: Bool = false
+        showsNeighbors: Bool = false,
+        title: LocalizedStringKey = "Photos",
+        onDeletePhoto: ((String) -> Void)? = nil,
+        deletionEnabled: Bool = true
     ) {
         self.identifiers = identifiers
         self._currentID = currentID
         self._selection = selection
         self.showsNeighbors = showsNeighbors
+        self.title = title
+        self.onDeletePhoto = onDeletePhoto
+        self.deletionEnabled = deletionEnabled
     }
 
     @ViewBuilder
@@ -70,6 +80,8 @@ struct PhotoDetailPager: View {
         }
         #if os(macOS)
         .navigationBarBackButtonHidden(true)
+        .toolbar(removing: .title)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { macViewerWidth = $0 }
         #endif
         .toolbar {
             #if os(macOS)
@@ -79,7 +91,7 @@ struct PhotoDetailPager: View {
                 }
                 .help("Back to photo grid")
             }
-            ToolbarItem(placement: .principal) { macControls }
+            macToolbar
             #endif
             #if os(iOS)
             ToolbarItem(placement: .platformLeading) {
@@ -111,6 +123,13 @@ struct PhotoDetailPager: View {
 
     var body: some View {
         presentation
+        #if os(macOS)
+        .overlay {
+            MacPhotoActionShortcuts(onDelete: deletionEnabled && onDeletePhoto != nil ? {
+                if let currentID { onDeletePhoto?(currentID) }
+            } : nil)
+        }
+        #endif
         // Press-and-hold peek: a large, screen-centered preview that blurs the
         // whole screen behind it. Lives at the top level so it covers the
         // toolbar and neighbor strip, not just the image area.
@@ -122,9 +141,11 @@ struct PhotoDetailPager: View {
     }
 
     #if os(macOS)
-    private var macControls: some View {
-        HStack(spacing: 16) {
-            MacPhotoZoomControl(scale: $macZoomScale)
+    @ToolbarContentBuilder
+    private var macToolbar: some ToolbarContent {
+        MacViewerTitleItem(title: title, windowWidth: macViewerWidth, hidesWhenNarrow: true)
+        MacPhotoZoomItem(scale: $macZoomScale)
+        ToolbarItemGroup(placement: .automatic) {
             Button { move(-1) } label: { Image(systemName: "chevron.left") }
                 .keyboardShortcut(.leftArrow, modifiers: [])
                 .disabled(currentIndex == nil || currentIndex == 0)
@@ -139,9 +160,10 @@ struct PhotoDetailPager: View {
             }
             .keyboardShortcut("i", modifiers: .command)
             .disabled(currentIndex == nil)
+            .labelStyle(.iconOnly)
+            .help("Photo info")
             if selection != nil { selectionToggle }
         }
-        .buttonStyle(.bordered)
     }
     #endif
 

@@ -46,6 +46,9 @@ struct BlurryPhotosView: View {
                 )
             ),
             showsNeighbors: true,
+            onDeletePhoto: { deletePhotos([$0]) },
+            onDeleteSelection: delete,
+            deletionEnabled: !isDeleting,
             actionBar: { isSelecting in actionBar(isSelecting: isSelecting) }
         )
         .alert("Couldn’t delete", isPresented: deletionAlertBinding) {
@@ -103,13 +106,16 @@ struct BlurryPhotosView: View {
     }
 
     private func delete() {
-        let ids = selection
-        guard !ids.isEmpty else { return }
+        deletePhotos(selection)
+    }
+
+    private func deletePhotos(_ ids: Set<String>) {
+        guard !ids.isEmpty, !isDeleting else { return }
         isDeleting = true
         Task { @MainActor in
             do {
                 _ = try await model.deletePhotos(ids)
-                selection.removeAll()
+                selection.subtract(ids)
             } catch {
                 // Tapping Cancel on the system delete prompt isn't an error.
                 if !PhotoLibraryErrors.isUserCancelled(error) {

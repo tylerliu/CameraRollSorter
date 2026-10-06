@@ -33,14 +33,64 @@ struct MacPhotoZoomControl: View {
     @Binding var scale: CGFloat
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 0) {
             Image(systemName: "minus.magnifyingglass")
+                .padding(.trailing, -12)
+                .padding(.leading, 6)
             Slider(value: $scale, in: 1...5)
                 .frame(width: 120)
                 .accessibilityLabel("Photo zoom")
             Image(systemName: "plus.magnifyingglass")
+                .padding(.leading, 6)
         }
         .foregroundStyle(.secondary)
+    }
+}
+
+struct MacPhotoZoomItem: ToolbarContent {
+    @Binding var scale: CGFloat
+
+    var body: some ToolbarContent {
+        ToolbarItem(placement: .automatic) {
+            MacPhotoZoomControl(scale: $scale)
+        }
+    }
+}
+
+/// Keeps the viewer title separate from Back and yields title space first.
+struct MacViewerTitle: View {
+    let title: LocalizedStringKey
+    let windowWidth: CGFloat
+
+    var body: some View {
+        Text(title)
+            .font(.title3)
+            .fontWeight(.semibold)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .frame(width: min(180, max(20, windowWidth - 620)), alignment: .leading)
+    }
+}
+
+struct MacViewerTitleItem: ToolbarContent {
+    let title: LocalizedStringKey
+    let windowWidth: CGFloat
+    var hidesWhenNarrow = false
+
+    @ToolbarContentBuilder
+    var body: some ToolbarContent {
+        if !hidesWhenNarrow || windowWidth >= 725 {
+            if #available(macOS 26, *) {
+                ToolbarItem(placement: .navigation) {
+                    MacViewerTitle(title: title, windowWidth: windowWidth)
+                }
+                .sharedBackgroundVisibility(.hidden)
+            } else {
+                ToolbarItem(placement: .navigation) {
+                    MacViewerTitle(title: title, windowWidth: windowWidth)
+                }
+            }
+        }
     }
 }
 

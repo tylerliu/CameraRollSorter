@@ -82,8 +82,12 @@ final class LiveToStillModel: IncrementalScanModel<LivePhotoItem> {
     /// Delete the original Live Photo without converting it. PhotoKit supplies
     /// the system confirmation and leaves the library unchanged on cancellation.
     func deletePhoto(_ identifier: String) async throws {
+        try await deletePhotos([identifier])
+    }
+
+    func deletePhotos(_ identifiers: Set<String>) async throws {
         guard canRead else { throw LiveToStillError.writeAccessRequired }
-        let assets = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil)
+        let assets = PHAsset.fetchAssets(withLocalIdentifiers: Array(identifiers), options: nil)
         guard assets.count > 0 else { return }
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             PHPhotoLibrary.shared().performChanges({
@@ -98,7 +102,7 @@ final class LiveToStillModel: IncrementalScanModel<LivePhotoItem> {
                 }
             }
         }
-        removeFromCurrentResults([identifier])
+        removeFromCurrentResults(identifiers)
     }
 
     /// Full-resolution still-image data for the Live Photo's photo resource.

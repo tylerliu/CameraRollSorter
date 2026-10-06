@@ -14,6 +14,7 @@ struct PhotoChooserView: View {
     @State private var infoPhotoID: String?
     @State private var isPreviewZoomed = false
     #if os(macOS)
+    @State private var macViewerWidth: CGFloat = 800
     @State private var macZoomScale: CGFloat = 1
     @State private var filmstripDragStartIndex: Int?
     #endif
@@ -62,9 +63,16 @@ struct PhotoChooserView: View {
         .safeAreaInset(edge: .bottom) { actionBar }
         .navigationTitle("Choose photos")
         .inlineNavigationTitle()
+        #if os(macOS)
+        .toolbar(removing: .title)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { macViewerWidth = $0 }
+        #endif
         .toolbar {
             #if os(macOS)
-            ToolbarItem(placement: .principal) { macControls }
+            macToolbar
+            if #available(macOS 26, *) {
+                ToolbarSpacer(.flexible, placement: .primaryAction)
+            }
             #endif
             ToolbarItem(placement: .platformTrailing) {
                 // One tap flips the whole group: if nothing's marked yet, mark
@@ -118,29 +126,38 @@ struct PhotoChooserView: View {
     }
 
     #if os(macOS)
-    private var macControls: some View {
-        HStack(spacing: 12) {
-            MacPhotoZoomControl(scale: $macZoomScale)
+    @ToolbarContentBuilder
+    private var macToolbar: some ToolbarContent {
+        MacViewerTitleItem(title: "Choose photos", windowWidth: macViewerWidth)
+        MacPhotoZoomItem(scale: $macZoomScale)
+        ToolbarItemGroup(placement: .automatic) {
             Button("Previous", systemImage: "chevron.left") { movePreview(-1) }
                 .keyboardShortcut(.leftArrow, modifiers: [])
                 .disabled(burstPreviewIndex == 0)
+                .labelStyle(.iconOnly)
+                .help("Previous photo")
             Text("\(orderedPhotos.isEmpty ? 0 : burstPreviewIndex + 1) of \(orderedPhotos.count)")
             Button("Next", systemImage: "chevron.right") { movePreview(1) }
                 .keyboardShortcut(.rightArrow, modifiers: [])
                 .disabled(burstPreviewIndex >= orderedPhotos.count - 1)
+                .labelStyle(.iconOnly)
+                .help("Next photo")
             Button("Info", systemImage: "info.circle") {
                 infoPhotoID = infoPhotoID == nil ? previewID : nil
             }
             .keyboardShortcut("i", modifiers: .command)
             .disabled(previewID == nil)
+            .labelStyle(.iconOnly)
+            .help("Photo info")
             Button(previewID.map { keptIDs.contains($0) } == true ? "Kept" : "Keep",
                    systemImage: previewID.map { keptIDs.contains($0) } == true ? "checkmark.circle.fill" : "circle") {
                 if let id = previewID { toggle(id) }
             }
             .keyboardShortcut(.space, modifiers: [])
             .disabled(previewID == nil)
+            .labelStyle(.iconOnly)
+            .help(previewID.map { keptIDs.contains($0) } == true ? "Mark for deletion" : "Keep photo")
         }
-        .buttonStyle(.bordered)
     }
     #endif
 
@@ -346,6 +363,9 @@ struct PhotoChooserView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.red)
+                #if os(macOS)
+                .keyboardShortcut(.delete, modifiers: [])
+                #endif
                 .disabled(markedForDeletion.isEmpty || isDeleting)
             }
             .photoActionBarSizing()

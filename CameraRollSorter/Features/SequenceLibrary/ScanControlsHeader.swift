@@ -122,94 +122,120 @@ struct ScanControlsHeader: View {
     }
 
     var body: some View {
-        VStack(spacing: 8) {
-            // Tags name the destination ("older"/"newer"); labels name travel.
-            Picker("Scan order", selection: $direction) {
-                Text("Old→New").tag("newer")
-                Text("New→Old").tag("older")
-            }
-            .pickerStyle(.segmented)
-            .onChange(of: direction) { _, _ in
-                // Re-seed the start to the new direction's sensible default and
-                // re-apply, so flipping direction while enabled keeps a valid
-                // window (e.g. "newest from today" vs "oldest from the start").
-                if startEnabled { startInterval = defaultStart().timeIntervalSince1970 }
-                // Reconcile + apply the cleanup rule (open → suppress, closed →
-                // schedule/reset the 2s timer).
-                notifyChange()
-            }
-
-            HStack {
-                Toggle(direction == "older" ? "Newest from date" : "Oldest from date", isOn: $startEnabled)
-                    .toggleStyle(.button)
-                    .onChange(of: startEnabled) { _, isOn in
-                        if isOn {
-                            // Seed from the last-used date; only fall back to the
-                            // default (today if no range) when nothing is stored,
-                            // so re-enabling remembers where the user left off.
-                            if startInterval == 0 {
-                                startInterval = defaultStart().timeIntervalSince1970
-                            }
-                            setWheel(expanded: true)
-                        } else {
-                            setWheel(expanded: false)
-                        }
-                    }
-                if startEnabled {
-                    #if os(macOS)
-                    if wheelExpanded {
-                        dateEditor
-                            .fixedSize()
-                        Button {
-                            setWheel(expanded: false)
-                        } label: {
-                            Image(systemName: "checkmark")
-                        }
-                        .buttonStyle(.bordered)
-                        .accessibilityLabel("Done picking date")
-                    } else {
-                        Button {
-                            setWheel(expanded: true)
-                        } label: {
-                            Text(startDate.wrappedValue, format: .dateTime.year().month().day())
-                                .font(.subheadline)
-                        }
-                        .buttonStyle(.bordered)
-                        .accessibilityLabel("Change date")
-                    }
-                    #else
-                    // Single bubble: the date, with a tick to its right while
-                    // the wheel is open — so "done picking" reads as part of the
-                    // same element, no second button. Tapping toggles the wheel
-                    // (open ↔ close), firing the settle/cancel callbacks via
-                    // `setWheel`.
-                    Button {
-                        setWheel(expanded: !wheelExpanded)
-                    } label: {
-                        HStack(spacing: 6) {
-                            Text(startDate.wrappedValue, format: .dateTime.year().month().day())
-                                .font(.subheadline)
-                            if wheelExpanded {
-                                Image(systemName: "checkmark")
-                                    .font(.subheadline.weight(.semibold))
-                            }
-                        }
-                    }
-                    .buttonStyle(.bordered)
-                    .accessibilityLabel(wheelExpanded ? "Done picking date" : "Change date")
-                    #endif
+        Group {
+            #if os(macOS)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 20) {
+                    Spacer(minLength: 0)
+                    orderControl.frame(width: 220)
+                    dateControls.fixedSize(horizontal: true, vertical: false)
+                    Spacer(minLength: 0)
                 }
-                Spacer()
+                VStack(spacing: 8) {
+                    orderControl
+                    dateControls
+                }
             }
-            #if os(iOS)
-            if startEnabled && wheelExpanded {
-                dateEditor
+            #else
+            VStack(spacing: 8) {
+                orderControl
+                dateControls
+                if startEnabled && wheelExpanded {
+                    dateEditor
+                }
             }
             #endif
         }
         .padding(.horizontal)
         .padding(.vertical, 8)
         .background(.bar)
+    }
+
+    private var orderControl: some View {
+        // Tags name the destination ("older"/"newer"); labels name travel.
+        Picker("", selection: $direction) {
+            Text("Old→New")
+                .accessibilityLabel("Scan oldest to newest")
+                .tag("newer")
+            Text("New→Old")
+                .accessibilityLabel("Scan newest to oldest")
+                .tag("older")
+        }
+        .pickerStyle(.segmented)
+        .onChange(of: direction) { _, _ in
+            // Re-seed the start to the new direction's sensible default and
+            // re-apply, so flipping direction while enabled keeps a valid
+            // window (e.g. "newest from today" vs "oldest from the start").
+            if startEnabled { startInterval = defaultStart().timeIntervalSince1970 }
+            // Reconcile + apply the cleanup rule (open → suppress, closed →
+            // schedule/reset the 2s timer).
+            notifyChange()
+        }
+    }
+
+    private var dateControls: some View {
+        HStack {
+            Toggle(direction == "older" ? "Newest from date" : "Oldest from date", isOn: $startEnabled)
+                .toggleStyle(.button)
+                .onChange(of: startEnabled) { _, isOn in
+                    if isOn {
+                        // Seed from the last-used date; only fall back to the
+                        // default (today if no range) when nothing is stored,
+                        // so re-enabling remembers where the user left off.
+                        if startInterval == 0 {
+                            startInterval = defaultStart().timeIntervalSince1970
+                        }
+                        setWheel(expanded: true)
+                    } else {
+                        setWheel(expanded: false)
+                    }
+                }
+            if startEnabled {
+                #if os(macOS)
+                if wheelExpanded {
+                    dateEditor
+                        .fixedSize()
+                    Button {
+                        setWheel(expanded: false)
+                    } label: {
+                        Image(systemName: "checkmark")
+                    }
+                    .buttonStyle(.bordered)
+                    .accessibilityLabel("Done picking date")
+                } else {
+                    Button {
+                        setWheel(expanded: true)
+                    } label: {
+                        Text(startDate.wrappedValue, format: .dateTime.year().month().day())
+                            .font(.subheadline)
+                    }
+                    .buttonStyle(.bordered)
+                    .accessibilityLabel("Change date")
+                }
+                #else
+                // Single bubble: the date, with a tick to its right while
+                // the wheel is open — so "done picking" reads as part of the
+                // same element, no second button. Tapping toggles the wheel
+                // (open ↔ close), firing the settle/cancel callbacks via
+                // `setWheel`.
+                Button {
+                    setWheel(expanded: !wheelExpanded)
+                } label: {
+                    HStack(spacing: 6) {
+                        Text(startDate.wrappedValue, format: .dateTime.year().month().day())
+                            .font(.subheadline)
+                        if wheelExpanded {
+                            Image(systemName: "checkmark")
+                                .font(.subheadline.weight(.semibold))
+                        }
+                    }
+                }
+                .buttonStyle(.bordered)
+                .accessibilityLabel(wheelExpanded ? "Done picking date" : "Change date")
+                #endif
+            }
+            Spacer()
+        }
     }
 
     private var dateEditor: some View {

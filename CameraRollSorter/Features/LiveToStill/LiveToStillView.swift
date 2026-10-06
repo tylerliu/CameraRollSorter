@@ -45,6 +45,8 @@ struct LiveToStillView: View {
                 )
             ),
             onDeletePhoto: deletePhoto,
+            onDeleteSelection: { deletePhotos(selection) },
+            onPrimaryAction: { if !selection.isEmpty && !isDeleting && !isConverting { showsConfirm = true } },
             deletionEnabled: !isConverting && !isDeleting,
             actionBar: { isSelecting in actionBar(isSelecting: isSelecting) }
         )
@@ -118,13 +120,18 @@ struct LiveToStillView: View {
     }
 
     private func deletePhoto(_ identifier: String) {
+        deletePhotos([identifier])
+    }
+
+    private func deletePhotos(_ identifiers: Set<String>) {
+        guard !identifiers.isEmpty else { return }
         guard !isDeleting, !isConverting else { return }
         isDeleting = true
         Task { @MainActor in
             defer { isDeleting = false }
             do {
-                try await model.deletePhoto(identifier)
-                selection.remove(identifier)
+                try await model.deletePhotos(identifiers)
+                selection.subtract(identifiers)
             } catch {
                 if !PhotoLibraryErrors.isUserCancelled(error) {
                     deletionError = error.localizedDescription

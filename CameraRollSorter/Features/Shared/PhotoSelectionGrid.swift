@@ -77,6 +77,8 @@ struct PhotoSelectionGrid<ActionBar: View>: View {
     var showsNeighbors: Bool = false
     /// Optional per-photo deletion exposed through right-click / long-press.
     var onDeletePhoto: ((String) -> Void)? = nil
+    var onDeleteSelection: (() -> Void)? = nil
+    var onPrimaryAction: (() -> Void)? = nil
     var deletionEnabled: Bool = true
     /// Bottom action bar (Convert / Delete / …), rendered via safeAreaInset.
     /// Receives whether the grid is currently in select mode so the host can
@@ -154,6 +156,23 @@ struct PhotoSelectionGrid<ActionBar: View>: View {
             Divider()
             content
         }
+        #if os(macOS)
+        .onChange(of: ids) { oldIDs, newIDs in
+            guard let current = detailID, !newIDs.contains(current) else { return }
+            if newIDs.isEmpty {
+                detailID = nil
+            } else {
+                let index = min(oldIDs.firstIndex(of: current) ?? 0, newIDs.count - 1)
+                detailID = newIDs[index]
+            }
+        }
+        .overlay {
+            MacPhotoActionShortcuts(
+                onDelete: deletionEnabled && !selection.isEmpty && detailID == nil ? onDeleteSelection : nil,
+                onPrimaryAction: detailID == nil ? onPrimaryAction : nil
+            )
+        }
+        #endif
         .navigationTitle(navigationTitle)
         .inlineNavigationTitle()
         .toolbar {
@@ -190,7 +209,10 @@ struct PhotoSelectionGrid<ActionBar: View>: View {
                 identifiers: ids,
                 currentID: $detailID,
                 selection: optionalSelectionBinding,
-                showsNeighbors: showsNeighbors
+                showsNeighbors: showsNeighbors,
+                title: navigationTitle,
+                onDeletePhoto: onDeletePhoto,
+                deletionEnabled: deletionEnabled
             )
         }
     }
