@@ -28,10 +28,12 @@ Photo viewers open inside the main window, with a Back button to return to the g
 
 - **← / →:** previous or next photo. At fitted zoom, a horizontal two-finger trackpad swipe also pages with animation. In the similar-photo chooser, filmstrip clicks/drags and arrow keys switch immediately for comparison; toolbar buttons and trackpad paging animate.
 - **Space:** toggle keep in the similar-photo chooser.
+- **Backspace:** delete marked photos in the similar-photo chooser, selected photos in the Live → Still or Low-aesthetic grid, or the current photo in the Live → Still or Low-aesthetic viewer. Photos supplies the deletion confirmation.
+- **⌘Return:** open the conversion confirmation for selected Live Photos in the Live → Still grid.
 - **⌘I:** toggle the metadata side pane, also available through the Info button.
 - **Zoom:** use the toolbar slider, trackpad pinch, or **⌘+ / ⌘−** (**⌘=** also zooms in). Zoom ranges from fitted size to 5×. Drag with the mouse or scroll with two fingers to pan a zoomed photo; movement stops at image boundaries and centers any axis smaller than the viewer.
-- **Selection grids:** click the selection circle, or click the photo in Select mode, to toggle it. **S** toggles Select mode. **Shift-click** applies the last plain click’s select/deselect action across the inclusive range. Clicking and dragging in Select mode paints a selection. Right-click a Live → Still photo to delete it; iPhone offers the same action through a long press.
-- **Start date:** expand the date control to edit its textual date fields with the keyboard or steppers, then confirm with the tick button. Year fields allow large jumps without paging through calendar months.
+- **Selection grids:** click the selection circle, or click the photo in Select mode, to toggle it. **S** toggles Select mode. **Shift-click** applies the last plain click’s select/deselect action across the inclusive range. Clicking and dragging in Select mode paints a selection. Right-click a Live → Still or Low-aesthetic photo to delete it; iPhone offers the same action through a long press.
+- **Start date:** expand the date control to edit its textual date fields with the keyboard or steppers, then confirm with the tick button. Year fields allow large jumps without paging through calendar months. Scan order and start date share a centered row when the window is wide enough and stack in narrower windows.
 
 
 ## Development
