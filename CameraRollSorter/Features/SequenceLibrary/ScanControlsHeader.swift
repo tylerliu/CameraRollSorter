@@ -150,15 +150,34 @@ struct ScanControlsHeader: View {
                             if startInterval == 0 {
                                 startInterval = defaultStart().timeIntervalSince1970
                             }
-                            // Opening the roller reconciles and cancels cleanup.
                             setWheel(expanded: true)
                         } else {
-                            // Turning the window off closes the roller and
-                            // settles (schedules the 2s cleanup).
                             setWheel(expanded: false)
                         }
                     }
                 if startEnabled {
+                    #if os(macOS)
+                    if wheelExpanded {
+                        dateEditor
+                            .fixedSize()
+                        Button {
+                            setWheel(expanded: false)
+                        } label: {
+                            Image(systemName: "checkmark")
+                        }
+                        .buttonStyle(.bordered)
+                        .accessibilityLabel("Done picking date")
+                    } else {
+                        Button {
+                            setWheel(expanded: true)
+                        } label: {
+                            Text(startDate.wrappedValue, format: .dateTime.year().month().day())
+                                .font(.subheadline)
+                        }
+                        .buttonStyle(.bordered)
+                        .accessibilityLabel("Change date")
+                    }
+                    #else
                     // Single bubble: the date, with a tick to its right while
                     // the wheel is open — so "done picking" reads as part of the
                     // same element, no second button. Tapping toggles the wheel
@@ -178,26 +197,30 @@ struct ScanControlsHeader: View {
                     }
                     .buttonStyle(.bordered)
                     .accessibilityLabel(wheelExpanded ? "Done picking date" : "Change date")
+                    #endif
                 }
                 Spacer()
             }
-            // Wheel (year/month/day rollers) shown only while expanded, so it
-            // doesn't take up space the rest of the time — like the old popover.
-            // The wheel applies on every change, so results update live.
+            #if os(iOS)
             if startEnabled && wheelExpanded {
-                Group {
-                    if let dateRange {
-                        DatePicker("", selection: startDate, in: dateRange, displayedComponents: .date)
-                    } else {
-                        DatePicker("", selection: startDate, displayedComponents: .date)
-                    }
-                }
-                .labelsHidden()
-                .datePickerStyle(.wheel)
+                dateEditor
             }
+            #endif
         }
         .padding(.horizontal)
         .padding(.vertical, 8)
         .background(.bar)
+    }
+
+    private var dateEditor: some View {
+        Group {
+            if let dateRange {
+                DatePicker("", selection: startDate, in: dateRange, displayedComponents: .date)
+            } else {
+                DatePicker("", selection: startDate, displayedComponents: .date)
+            }
+        }
+        .labelsHidden()
+        .scanDatePickerStyle()
     }
 }

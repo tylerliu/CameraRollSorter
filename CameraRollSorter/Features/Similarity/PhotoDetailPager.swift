@@ -5,7 +5,7 @@ import SwiftUI
 /// `ZoomablePhotoView` for pinch-zoom, pan, and Live Photo playback. Generic so
 /// any category list (Live → Still, Blurry, …) can present a large view.
 ///
-/// Presented as a sheet/full-screen cover. Paging is disabled while an image is
+/// Presented full-screen on iOS and in the main navigation on Mac. Paging is disabled while an image is
 /// zoomed so panning doesn't fight the pager.
 struct PhotoDetailPager: View {
     let identifiers: [String]
@@ -37,53 +37,77 @@ struct PhotoDetailPager: View {
         self.showsNeighbors = showsNeighbors
     }
 
-    var body: some View {
-        NavigationStack {
-            TabView(selection: selectionBinding) {
-                ForEach(identifiers, id: \.self) { id in
-                    ZoomablePhotoView(
-                        identifier: id,
-                        isZoomed: $isZoomed,
-                        onSwipeUp: { infoID = id }
-                    )
-                    .tag(id)
-                    .ignoresSafeArea(edges: .bottom)
-                }
+    @ViewBuilder
+    private var presentation: some View {
+        #if os(iOS)
+        NavigationStack { detailContent }
+        #else
+        detailContent
+        #endif
+    }
+
+    private var detailContent: some View {
+        HStack(spacing: 0) {
+            viewer
+            #if os(macOS)
+            if infoID != nil, let id = currentID ?? identifiers.first {
+                Divider()
+                MacPhotoInfoPane(identifier: id) { infoID = nil }
             }
-            .tabViewStyle(.page(indexDisplayMode: identifiers.count > 1 ? .automatic : .never))
-            .background(Color.black.ignoresSafeArea())
-            .safeAreaInset(edge: .bottom) {
-                // Nearest-in-time neighbors for the current photo. Hidden while
-                // zoomed so it doesn't fight the pinch/pan surface.
-                if showsNeighbors, !isZoomed, let id = currentID ?? identifiers.first {
-                    NeighborStrip(identifier: id, onPeek: { peekID = $0 })
-                        .background(.ultraThinMaterial)
-                }
-            }
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Done") { dismiss() }
-                }
-                ToolbarItem(placement: .principal) {
-                    if let position {
-                        Text("\(position) of \(identifiers.count)")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    if selection != nil { selectionToggle }
-                }
-            }
-            .toolbarBackground(.visible, for: .navigationBar)
-            .sheet(isPresented: infoPresented) {
-                if let infoID {
-                    PhotoInfoView(identifier: infoID)
-                        .presentationDetents([.medium, .large])
-                        .presentationDragIndicator(.visible)
-                }
+            #endif
+        }
+        .background(Color.black.ignoresSafeArea())
+        .safeAreaInset(edge: .bottom) {
+            // Nearest-in-time neighbors for the current photo. Hidden while
+            // zoomed so it doesn't fight the pinch/pan surface.
+            if showsNeighbors, !isZoomed, let id = currentID ?? identifiers.first {
+                NeighborStrip(identifier: id, onPeek: { peekID = $0 })
+                    .background(.ultraThinMaterial)
             }
         }
+        #if os(macOS)
+        .navigationBarBackButtonHidden(true)
+        #endif
+        .toolbar {
+            #if os(macOS)
+            ToolbarItem(placement: .platformLeading) {
+                Button { dismiss() } label: {
+                    Label("Back", systemImage: "chevron.left")
+                }
+                .help("Back to photo grid")
+            }
+            ToolbarItem(placement: .principal) { macControls }
+            #endif
+            #if os(iOS)
+            ToolbarItem(placement: .platformLeading) {
+                Button("Done") { dismiss() }
+            }
+            ToolbarItem(placement: .principal) {
+                if let position {
+                    Text("\(position) of \(identifiers.count)")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            ToolbarItem(placement: .platformTrailing) {
+                if selection != nil { selectionToggle }
+            }
+            #endif
+        }
+        .visibleNavigationBarBackground()
+        #if os(iOS)
+        .sheet(isPresented: infoPresented) {
+            if let infoID {
+                PhotoInfoView(identifier: infoID)
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+            }
+        }
+        #endif
+    }
+
+    var body: some View {
+        presentation
         // Press-and-hold peek: a large, screen-centered preview that blurs the
         // whole screen behind it. Lives at the top level so it covers the
         // toolbar and neighbor strip, not just the image area.
@@ -92,6 +116,75 @@ struct PhotoDetailPager: View {
                 PeekOverlay(identifier: peekID)
             }
         }
+    }
+
+    #if os(macOS)
+    private var macControls: some View {
+        HStack(spacing: 16) {
+            Button { move(-1) } label: { Image(systemName: "chevron.left") }
+                .keyboardShortcut(.leftArrow, modifiers: [])
+                .disabled(currentIndex == nil || currentIndex == 0)
+                .help("Previous photo")
+            if let position { Text("\(position) of \(identifiers.count)") }
+            Button { move(1) } label: { Image(systemName: "chevron.right") }
+                .keyboardShortcut(.rightArrow, modifiers: [])
+                .disabled(currentIndex == nil || currentIndex == identifiers.count - 1)
+                .help("Next photo")
+            Button("Info", systemImage: "info.circle") {
+                infoID = infoID == nil ? (currentID ?? identifiers.first) : nil
+            }
+            .keyboardShortcut("i", modifiers: .command)
+            .disabled(currentIndex == nil)
+            if selection != nil { selectionToggle }
+        }
+        .buttonStyle(.bordered)
+    }
+    #endif
+
+    @ViewBuilder
+    private var viewer: some View {
+        #if os(macOS)
+        ZStack {
+            if currentIndex != nil {
+                MacPhotoPager(identifiers: identifiers, currentIndex: Binding(
+                    get: { currentIndex ?? 0 },
+                    set: { if identifiers.indices.contains($0) { currentID = identifiers[$0] } }
+                ))
+            } else {
+                ContentUnavailableView("No photos", systemImage: "photo")
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        #else
+            TabView(selection: selectionBinding) {
+                ForEach(identifiers, id: \.self) { id in
+                    Group {
+                        #if os(iOS)
+                        ZoomablePhotoView(
+                            identifier: id,
+                            isZoomed: $isZoomed,
+                            onSwipeUp: { infoID = id }
+                        )
+                        #else
+                        PhotoPreviewView(identifier: id)
+                        #endif
+                    }
+                    .tag(id)
+                    .ignoresSafeArea(edges: .bottom)
+                }
+            }
+            .pagedTabViewStyle(showsIndex: identifiers.count > 1)
+        #endif
+    }
+
+    private var currentIndex: Int? {
+        guard let id = currentID ?? identifiers.first else { return nil }
+        return identifiers.firstIndex(of: id)
+    }
+
+    private func move(_ offset: Int) {
+        guard let index = currentIndex, identifiers.indices.contains(index + offset) else { return }
+        currentID = identifiers[index + offset]
     }
 
     @ViewBuilder
@@ -106,7 +199,7 @@ struct PhotoDetailPager: View {
                 selection?.insert(id)
             }
         } label: {
-            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+            Label(isSelected ? "Selected" : "Select", systemImage: isSelected ? "checkmark.circle.fill" : "circle")
                 .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
         }
         .accessibilityLabel(isSelected ? "Selected for conversion. Tap to deselect." : "Not selected. Tap to select for conversion.")
@@ -126,7 +219,7 @@ struct PhotoDetailPager: View {
     }
 
     private var position: Int? {
-        guard let currentID, let index = identifiers.firstIndex(of: currentID) else { return nil }
+        guard let index = currentIndex else { return nil }
         return index + 1
     }
 }
@@ -140,7 +233,7 @@ struct PhotoDetailPager: View {
 private struct PeekOverlay: View {
     let identifier: String
 
-    @State private var image: UIImage?
+    @State private var image: PlatformImage?
     @State private var request: PHImageRequestID?
 
     var body: some View {
@@ -154,7 +247,7 @@ private struct PeekOverlay: View {
 
                 Group {
                     if let image {
-                        Image(uiImage: image)
+                        Image(platformImage: image)
                             .resizable()
                             .aspectRatio(contentMode: .fit)
                             // Fix the width; height follows the photo's aspect

@@ -16,6 +16,8 @@ struct LiveToStillView: View {
 
     @State private var selection: Set<String> = []
     @State private var isConverting = false
+    @State private var isDeleting = false
+    @State private var deletionError: String?
     @State private var showsConfirm = false
     @State private var conversionError: String?
 
@@ -42,12 +44,21 @@ struct LiveToStillView: View {
                     description: Text("No convertible Live Photos were found in this range. This includes Live Photos with Live turned off, but not Loop or Bounce effects, and photos unavailable locally can’t be converted.")
                 )
             ),
+            onDeletePhoto: deletePhoto,
+            deletionEnabled: !isConverting && !isDeleting,
             actionBar: { isSelecting in actionBar(isSelecting: isSelecting) }
         )
         .alert("Couldn’t convert", isPresented: conversionAlertBinding) {
             Button("OK", role: .cancel) { conversionError = nil }
         } message: {
             Text(conversionError ?? "Try again after checking photo access.")
+        }
+        .alert("Couldn’t delete", isPresented: Binding(
+            get: { deletionError != nil }, set: { if !$0 { deletionError = nil } }
+        )) {
+            Button("OK", role: .cancel) { deletionError = nil }
+        } message: {
+            Text(deletionError ?? "Try again after checking photo access.")
         }
         .confirmationDialog(
             "Convert \(selection.count) to still?",
@@ -65,30 +76,32 @@ struct LiveToStillView: View {
     }
 
     private func actionBar(isSelecting: Bool) -> some View {
-        VStack(spacing: 8) {
+        VStack(spacing: PhotoActionBarLayout.spacing) {
             Divider()
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("\(model.items.count) Live Photos")
-                        .font(.subheadline.weight(.semibold))
+                        .font(PhotoActionBarLayout.titleFont)
                     Text(selectionHint(isSelecting: isSelecting))
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(PhotoActionBarLayout.detailFont).foregroundStyle(.secondary)
                 }
                 Spacer()
                 Button {
                     showsConfirm = true
                 } label: {
-                    if isConverting {
-                        ProgressView()
-                    } else {
-                        Label("Convert \(selection.count)", systemImage: "photo")
+                    Group {
+                        if isConverting {
+                            ProgressView()
+                        } else {
+                            Label("Convert \(selection.count)", systemImage: "photo")
+                        }
                     }
+                    .photoActionButtonLabelSizing()
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(selection.isEmpty || isConverting)
+                .disabled(selection.isEmpty || isConverting || isDeleting)
             }
-            .padding(.horizontal)
-            .padding(.bottom, 6)
+            .photoActionBarSizing()
         }
         .background(.bar)
     }
@@ -104,7 +117,24 @@ struct LiveToStillView: View {
         Binding(get: { conversionError != nil }, set: { if !$0 { conversionError = nil } })
     }
 
+    private func deletePhoto(_ identifier: String) {
+        guard !isDeleting, !isConverting else { return }
+        isDeleting = true
+        Task { @MainActor in
+            defer { isDeleting = false }
+            do {
+                try await model.deletePhoto(identifier)
+                selection.remove(identifier)
+            } catch {
+                if !PhotoLibraryErrors.isUserCancelled(error) {
+                    deletionError = error.localizedDescription
+                }
+            }
+        }
+    }
+
     private func convert() {
+        guard !isDeleting, !isConverting else { return }
         let ids = selection
         guard !ids.isEmpty else { return }
         isConverting = true

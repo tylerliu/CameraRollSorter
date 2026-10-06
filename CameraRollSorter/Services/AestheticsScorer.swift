@@ -1,5 +1,4 @@
 import Photos
-import UIKit
 import Vision
 
 struct AestheticsResult: Sendable {
@@ -32,7 +31,8 @@ actor AestheticsScorer {
 
         for id in identifiers {
             if Task.isCancelled { break }
-            let outcome = scoreOne(id)
+            let outcome = await scoreOne(id)
+            if Task.isCancelled { break }
             switch outcome {
             case let .scored(value, isUtility):
                 scores[id] = value
@@ -50,9 +50,11 @@ actor AestheticsScorer {
     }
 
     @available(iOS 18.0, *)
-    private func scoreOne(_ identifier: String) -> Outcome {
-        autoreleasepool {
-            guard let cgImage = PhotoImageLoading.synchronousImage(for: identifier, targetSize: 512)?.cgImage else {
+    private func scoreOne(_ identifier: String) async -> Outcome {
+        let image = await PhotoImageLoading.image(for: identifier, targetSize: 512)
+        guard !Task.isCancelled else { return .failed }
+        return autoreleasepool {
+            guard let cgImage = image?.platformCGImage else {
                 return .failed
             }
             do {

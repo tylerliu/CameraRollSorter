@@ -1,3 +1,4 @@
+#if os(iOS)
 import PhotosUI
 import SwiftUI
 
@@ -39,7 +40,8 @@ struct LimitedLibraryPicker: UIViewControllerRepresentable {
             // This Objective-C category requires PhotosUI to remain linked even
             // though no PhotosUI class is instantiated here.
             PHPhotoLibrary.shared().presentLimitedLibraryPicker(from: self) { [weak self] _ in
-                Task { @MainActor in self?.finish() }
+                guard let host = self else { return }
+                Task { @MainActor in host.finish() }
             }
         }
 
@@ -50,3 +52,4 @@ struct LimitedLibraryPicker: UIViewControllerRepresentable {
         }
     }
 }
+#endif

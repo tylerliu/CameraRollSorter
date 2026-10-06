@@ -61,30 +61,32 @@ struct BlurryPhotosView: View {
     // MARK: - Action bar
 
     private func actionBar(isSelecting: Bool) -> some View {
-        VStack(spacing: 8) {
+        VStack(spacing: PhotoActionBarLayout.spacing) {
             Divider()
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("\(model.items.count) low-aesthetic photos")
-                        .font(.subheadline.weight(.semibold))
+                        .font(PhotoActionBarLayout.titleFont)
                     Text(selectionHint(isSelecting: isSelecting))
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(PhotoActionBarLayout.detailFont).foregroundStyle(.secondary)
                 }
                 Spacer()
                 Button(role: .destructive) {
                     delete()
                 } label: {
-                    if isDeleting {
-                        ProgressView()
-                    } else {
-                        Label("Delete \(selection.count)", systemImage: "trash")
+                    Group {
+                        if isDeleting {
+                            ProgressView()
+                        } else {
+                            Label("Delete \(selection.count)", systemImage: "trash")
+                        }
                     }
+                    .photoActionButtonLabelSizing()
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(selection.isEmpty || isDeleting)
             }
-            .padding(.horizontal)
-            .padding(.bottom, 6)
+            .photoActionBarSizing()
         }
         .background(.bar)
     }

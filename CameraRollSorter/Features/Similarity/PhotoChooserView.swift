@@ -13,6 +13,9 @@ struct PhotoChooserView: View {
     @State private var centeredPhotoID: String?
     @State private var infoPhotoID: String?
     @State private var isPreviewZoomed = false
+    #if os(macOS)
+    @State private var filmstripDragStartIndex: Int?
+    #endif
 
     /// Photos ordered so the most-similar shots are adjacent (spine ordering),
     /// making filmstrip scrubbing act as flicker comparison. Computed once in
@@ -45,13 +48,24 @@ struct PhotoChooserView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            burstContent
+            HStack(spacing: 0) {
+                burstContent
+                #if os(macOS)
+                if infoPhotoID != nil, let id = previewID {
+                    Divider()
+                    MacPhotoInfoPane(identifier: id) { infoPhotoID = nil }
+                }
+                #endif
+            }
         }
         .safeAreaInset(edge: .bottom) { actionBar }
         .navigationTitle("Choose photos")
-        .navigationBarTitleDisplayMode(.inline)
+        .inlineNavigationTitle()
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            #if os(macOS)
+            ToolbarItem(placement: .principal) { macControls }
+            #endif
+            ToolbarItem(placement: .platformTrailing) {
                 // One tap flips the whole group: if nothing's marked yet, mark
                 // all for deletion; otherwise reset to keep everything.
                 if markedForDeletion.isEmpty {
@@ -66,6 +80,7 @@ struct PhotoChooserView: View {
         } message: {
             Text(deletionError ?? "Try again after checking photo access.")
         }
+        #if os(iOS)
         .sheet(isPresented: infoSheetBinding) {
             if let infoPhotoID {
                 PhotoInfoView(identifier: infoPhotoID)
@@ -74,6 +89,7 @@ struct PhotoChooserView: View {
                     .presentationBackgroundInteraction(.enabled(upThrough: .medium))
             }
         }
+        #endif
         .task(id: sequence.id) {
             // Compute the flicker-comparison ordering here (not in init) so the
             // list stays smooth: building this view as a NavigationLink
@@ -100,6 +116,46 @@ struct PhotoChooserView: View {
         }
     }
 
+    #if os(macOS)
+    private var macControls: some View {
+        HStack(spacing: 12) {
+            Button("Previous", systemImage: "chevron.left") { movePreview(-1) }
+                .keyboardShortcut(.leftArrow, modifiers: [])
+                .disabled(burstPreviewIndex == 0)
+            Text("\(orderedPhotos.isEmpty ? 0 : burstPreviewIndex + 1) of \(orderedPhotos.count)")
+            Button("Next", systemImage: "chevron.right") { movePreview(1) }
+                .keyboardShortcut(.rightArrow, modifiers: [])
+                .disabled(burstPreviewIndex >= orderedPhotos.count - 1)
+            Button("Info", systemImage: "info.circle") {
+                infoPhotoID = infoPhotoID == nil ? previewID : nil
+            }
+            .keyboardShortcut("i", modifiers: .command)
+            .disabled(previewID == nil)
+            Button(previewID.map { keptIDs.contains($0) } == true ? "Kept" : "Keep",
+                   systemImage: previewID.map { keptIDs.contains($0) } == true ? "checkmark.circle.fill" : "circle") {
+                if let id = previewID { toggle(id) }
+            }
+            .keyboardShortcut(.space, modifiers: [])
+            .disabled(previewID == nil)
+        }
+        .buttonStyle(.bordered)
+    }
+    #endif
+
+    private var previewID: String? {
+        guard orderedPhotos.indices.contains(burstPreviewIndex) else { return nil }
+        return orderedPhotos[burstPreviewIndex].id
+    }
+
+    private func movePreview(_ offset: Int) {
+        let index = burstPreviewIndex + offset
+        guard orderedPhotos.indices.contains(index) else { return }
+        withAnimation(.easeOut(duration: 0.25)) {
+            burstPreviewIndex = index
+            centeredPhotoID = orderedPhotos[index].id
+        }
+    }
+
     private var burstContent: some View {
         GeometryReader { geometry in
             VStack(spacing: 10) {
@@ -107,8 +163,16 @@ struct PhotoChooserView: View {
                     let preview = orderedPhotos[min(burstPreviewIndex, orderedPhotos.count - 1)]
                     let kept = keptIDs.contains(preview.id)
 
-                    ZoomablePhotoView(identifier: preview.id, isZoomed: $isPreviewZoomed, onTap: { toggle(preview.id) }) {
-                        infoPhotoID = preview.id
+                    Group {
+                        #if os(iOS)
+                        ZoomablePhotoView(identifier: preview.id, isZoomed: $isPreviewZoomed, onTap: { toggle(preview.id) }) {
+                            infoPhotoID = preview.id
+                        }
+                        #else
+                        MacPhotoPager(identifiers: orderedPhotos.map(\.id),
+                                      currentIndex: $burstPreviewIndex, onClick: toggle,
+                                      animatesIndexChanges: false)
+                        #endif
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .zIndex(isPreviewZoomed ? 1 : 0)
@@ -140,9 +204,15 @@ struct PhotoChooserView: View {
                             .font(.caption.weight(.medium))
                             .foregroundStyle(.secondary)
                     } else {
-                        Text("Pinch to zoom · tap to toggle · swipe up for info")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        Group {
+                            #if os(iOS)
+                            Text("Pinch to zoom · tap to toggle · swipe up for info")
+                            #else
+                            Text("Click to toggle")
+                            #endif
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     }
                 }
             }
@@ -150,12 +220,20 @@ struct PhotoChooserView: View {
         }
     }
 
+    private var filmstripThumbnailSize: CGFloat {
+        #if os(macOS)
+        90
+        #else
+        54
+        #endif
+    }
+
     private func filmstrip(width: CGFloat) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
             LazyHStack(spacing: 7) {
                 ForEach(Array(orderedPhotos.enumerated()), id: \.element.id) { index, photo in
                     VStack(spacing: 4) {
-                        PhotoThumbnail(identifier: photo.id, size: 54)
+                        PhotoThumbnail(identifier: photo.id, size: filmstripThumbnailSize)
                             .overlay(alignment: .bottomTrailing) {
                                 ZStack {
                                     Circle()
@@ -194,10 +272,31 @@ struct PhotoChooserView: View {
             }
             .scrollTargetLayout()
         }
-        .contentMargins(.horizontal, max(0, (width - 54) / 2), for: .scrollContent)
+        .contentMargins(.horizontal, max(0, (width - filmstripThumbnailSize) / 2), for: .scrollContent)
         .scrollTargetBehavior(.viewAligned(limitBehavior: .always))
         .scrollPosition(id: $centeredPhotoID, anchor: .center)
-        .frame(height: 82)
+        .frame(height: filmstripThumbnailSize + 28)
+        #if os(macOS)
+        .highPriorityGesture(
+            DragGesture(minimumDistance: 3)
+                .onChanged { value in
+                    if filmstripDragStartIndex == nil {
+                        filmstripDragStartIndex = burstPreviewIndex
+                    }
+                    let step = Int((-value.translation.width / (filmstripThumbnailSize + 7)).rounded())
+                    let index = min(max(0, (filmstripDragStartIndex ?? burstPreviewIndex) + step),
+                                    orderedPhotos.count - 1)
+                    guard orderedPhotos.indices.contains(index) else { return }
+                    var transaction = Transaction(animation: nil)
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) {
+                        burstPreviewIndex = index
+                        centeredPhotoID = orderedPhotos[index].id
+                    }
+                }
+                .onEnded { _ in filmstripDragStartIndex = nil }
+        )
+        #endif
         .task(id: sequence.id) {
             guard centeredPhotoID == nil, let firstID = orderedPhotos.first?.id else { return }
             await Task.yield()
@@ -216,36 +315,38 @@ struct PhotoChooserView: View {
     }
 
     private var actionBar: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: PhotoActionBarLayout.spacing) {
             Divider()
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("\(keptIDs.count) of \(orderedPhotos.count) kept")
-                        .font(.subheadline.weight(.semibold))
+                        .font(PhotoActionBarLayout.titleFont)
                     if markedForDeletion.isEmpty {
                         Text("No photos marked for deletion")
                     } else {
                         Text("\(markedForDeletion.count) will go to Recently Deleted")
                     }
                 }
-                .font(.caption)
+                .font(PhotoActionBarLayout.detailFont)
                 .foregroundStyle(.secondary)
                 Spacer()
                 Button(role: .destructive) {
                     deleteMarkedPhotos()
                 } label: {
-                    if isDeleting {
-                        ProgressView()
-                    } else {
-                        Label("Delete \(markedForDeletion.count)", systemImage: "trash")
+                    Group {
+                        if isDeleting {
+                            ProgressView()
+                        } else {
+                            Label("Delete \(markedForDeletion.count)", systemImage: "trash")
+                        }
                     }
+                    .photoActionButtonLabelSizing()
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.red)
                 .disabled(markedForDeletion.isEmpty || isDeleting)
             }
-            .padding(.horizontal)
-            .padding(.bottom, 6)
+            .photoActionBarSizing()
         }
         .background(.bar)
     }
