@@ -13,7 +13,7 @@ struct PhotoChooserView: View {
     @State private var centeredPhotoID: String?
     @State private var infoPhotoID: String?
     @State private var isPreviewZoomed = false
-    @State private var showsCompositionGrid = false
+    @AppStorage("review.similarityCompositionGrid") private var showsCompositionGrid = false
     #if os(macOS)
     @State private var macViewerWidth: CGFloat = 800
     @State private var macZoomScale: CGFloat = 1
@@ -81,6 +81,9 @@ struct PhotoChooserView: View {
                     .tint(showsCompositionGrid ? Color.accentColor : Color.primary)
                     .accessibilityValue(showsCompositionGrid ? "On" : "Off")
                     .help("Toggle composition grid")
+            }
+            if #available(iOS 26, macOS 26, *) {
+                ToolbarSpacer(.fixed, placement: .platformTrailing)
             }
             ToolbarItem(placement: .platformTrailing) {
                 // One tap flips the whole group: if nothing's marked yet, mark
