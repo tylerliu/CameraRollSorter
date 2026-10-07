@@ -101,6 +101,7 @@ struct MacPhotoPager: View {
     @Binding var zoomScale: CGFloat
     var onClick: ((String) -> Void)? = nil
     var animatesIndexChanges = true
+    var showsCompositionGrid = false
     @State private var translation: CGFloat = 0
 
     var body: some View {
@@ -110,7 +111,7 @@ struct MacPhotoPager: View {
                 ForEach(identifiers.indices.filter { abs($0 - currentIndex) <= 1 }, id: \.self) { index in
                     PhotoPreviewView(identifier: identifiers[index], onClick: {
                         onClick?(identifiers[index])
-                    }, isCurrent: index == currentIndex,
+                    }, isCurrent: index == currentIndex, showsCompositionGrid: showsCompositionGrid,
                        zoomScale: index == currentIndex ? $zoomScale : .constant(1))
                     .frame(width: width, height: geometry.size.height)
                     .offset(x: CGFloat(index - currentIndex) * width + translation)

@@ -13,6 +13,7 @@ struct PhotoChooserView: View {
     @State private var centeredPhotoID: String?
     @State private var infoPhotoID: String?
     @State private var isPreviewZoomed = false
+    @State private var showsCompositionGrid = false
     #if os(macOS)
     @State private var macViewerWidth: CGFloat = 800
     @State private var macZoomScale: CGFloat = 1
@@ -74,6 +75,13 @@ struct PhotoChooserView: View {
                 ToolbarSpacer(.flexible, placement: .primaryAction)
             }
             #endif
+            ToolbarItem(placement: .platformTrailing) {
+                Button("Composition grid", systemImage: "grid") { showsCompositionGrid.toggle() }
+                    .labelStyle(.iconOnly)
+                    .tint(showsCompositionGrid ? Color.accentColor : Color.primary)
+                    .accessibilityValue(showsCompositionGrid ? "On" : "Off")
+                    .help("Toggle composition grid")
+            }
             ToolbarItem(placement: .platformTrailing) {
                 // One tap flips the whole group: if nothing's marked yet, mark
                 // all for deletion; otherwise reset to keep everything.
@@ -184,13 +192,13 @@ struct PhotoChooserView: View {
 
                     Group {
                         #if os(iOS)
-                        ZoomablePhotoView(identifier: preview.id, isZoomed: $isPreviewZoomed, onTap: { toggle(preview.id) }) {
+                        ZoomablePhotoView(identifier: preview.id, isZoomed: $isPreviewZoomed, showsCompositionGrid: showsCompositionGrid, onTap: { toggle(preview.id) }) {
                             infoPhotoID = preview.id
                         }
                         #else
                         MacPhotoPager(identifiers: orderedPhotos.map(\.id),
                                       currentIndex: $burstPreviewIndex, zoomScale: $macZoomScale, onClick: toggle,
-                                      animatesIndexChanges: false)
+                                      animatesIndexChanges: false, showsCompositionGrid: showsCompositionGrid)
                         #endif
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)

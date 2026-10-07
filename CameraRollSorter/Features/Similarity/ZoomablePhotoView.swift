@@ -16,15 +16,18 @@ struct ZoomablePhotoView: View {
     let onSwipeUp: () -> Void
     /// Driven to true while scale > 1 so the caller can raise zIndex.
     @Binding var isZoomed: Bool
+    var showsCompositionGrid: Bool
 
     init(
         identifier: String,
         isZoomed: Binding<Bool> = .constant(false),
+        showsCompositionGrid: Bool = false,
         onTap: @escaping () -> Void = {},
         onSwipeUp: @escaping () -> Void
     ) {
         self.identifier = identifier
         self._isZoomed = isZoomed
+        self.showsCompositionGrid = showsCompositionGrid
         self.onTap = onTap
         self.onSwipeUp = onSwipeUp
     }
@@ -56,6 +59,7 @@ struct ZoomablePhotoView: View {
             if showsLivePhoto, isLivePhoto, let livePhoto {
                 LivePhotoZoomView(
                     livePhoto: livePhoto,
+                    showsCompositionGrid: showsCompositionGrid,
                     onZoomStarted: { isZoomed = true },
                     onZoomEnded: { scale in isZoomed = scale > 1.01 },
                     onSingleTap: onTap,
@@ -66,6 +70,7 @@ struct ZoomablePhotoView: View {
                 // Still path (also the pre-load placeholder for Live Photos).
                 ZoomableImage(
                     image: img,
+                    showsCompositionGrid: showsCompositionGrid,
                     onZoomStarted: { isZoomed = true },
                     onZoomEnded: { scale in isZoomed = scale > 1.01 },
                     onSingleTap: onTap,
@@ -125,6 +130,8 @@ struct ZoomablePhotoView: View {
 private struct ZoomableScrollView<Content: UIView>: UIViewRepresentable {
     /// Builds the content view to host. Called once in `makeUIView`.
     let makeContent: () -> Content
+    var photoSize: CGSize
+    var showsCompositionGrid = false
     /// Optional per-update reconfiguration (e.g. swap a PHLivePhoto).
     var updateContent: ((Content) -> Void)?
     /// Optional teardown (e.g. stop Live Photo playback) on dismantle.
@@ -154,6 +161,11 @@ private struct ZoomableScrollView<Content: UIView>: UIViewRepresentable {
         content.backgroundColor = .clear
         content.translatesAutoresizingMaskIntoConstraints = false
         scrollView.addSubview(content)
+        let grid = PhotoCompositionGridView()
+        grid.isUserInteractionEnabled = false
+        grid.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        content.addSubview(grid)
+        context.coordinator.grid = grid
         context.coordinator.content = content
         context.coordinator.teardown = teardownContent
 
@@ -186,6 +198,11 @@ private struct ZoomableScrollView<Content: UIView>: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: UIScrollView, context: Context) {
+        context.coordinator.grid?.photoSize = photoSize
+        context.coordinator.grid?.isHidden = !showsCompositionGrid
+        if let content = context.coordinator.content {
+            context.coordinator.grid?.frame = content.bounds
+        }
         context.coordinator.onZoomStarted = onZoomStarted
         context.coordinator.onZoomEnded = onZoomEnded
         context.coordinator.onSingleTap = onSingleTap
@@ -199,6 +216,7 @@ private struct ZoomableScrollView<Content: UIView>: UIViewRepresentable {
 
     final class Coordinator: NSObject, UIScrollViewDelegate {
         var content: Content?
+        var grid: PhotoCompositionGridView?
         var teardown: ((Content) -> Void)?
         var onZoomStarted: (() -> Void)?
         var onZoomEnded: ((CGFloat) -> Void)?
@@ -236,11 +254,56 @@ private struct ZoomableScrollView<Content: UIView>: UIViewRepresentable {
     }
 }
 
+private final class PhotoCompositionGridView: UIView {
+    var photoSize = CGSize.zero { didSet { setNeedsLayout() } }
+    private let darkLines = CAShapeLayer()
+    private let lightLines = CAShapeLayer()
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        for (layer, color, width) in [
+            (darkLines, UIColor.black.withAlphaComponent(0.45), CGFloat(2)),
+            (lightLines, UIColor.white.withAlphaComponent(0.8), CGFloat(1))
+        ] {
+            layer.fillColor = nil
+            layer.strokeColor = color.cgColor
+            layer.lineWidth = width
+            self.layer.addSublayer(layer)
+        }
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard photoSize.width > 0, photoSize.height > 0 else { return }
+        let scale = min(bounds.width / photoSize.width, bounds.height / photoSize.height)
+        let size = CGSize(width: photoSize.width * scale, height: photoSize.height * scale)
+        let rect = CGRect(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2,
+                          width: size.width, height: size.height)
+        let path = UIBezierPath()
+        for fraction in [CGFloat(1) / 3, CGFloat(2) / 3] {
+            let x = rect.minX + rect.width * fraction
+            let y = rect.minY + rect.height * fraction
+            path.move(to: CGPoint(x: x, y: rect.minY))
+            path.addLine(to: CGPoint(x: x, y: rect.maxY))
+            path.move(to: CGPoint(x: rect.minX, y: y))
+            path.addLine(to: CGPoint(x: rect.maxX, y: y))
+        }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        darkLines.path = path.cgPath
+        lightLines.path = path.cgPath
+        CATransaction.commit()
+    }
+}
+
 // MARK: - Still image / Live Photo builders
 
 /// Zoomable still image, hosting a `UIImageView`.
 private struct ZoomableImage: View {
     let image: UIImage
+    var showsCompositionGrid = false
     var onZoomStarted: (() -> Void)?
     var onZoomEnded: ((CGFloat) -> Void)?
     var onSingleTap: (() -> Void)?
@@ -249,6 +312,8 @@ private struct ZoomableImage: View {
     var body: some View {
         ZoomableScrollView<UIImageView>(
             makeContent: { UIImageView(image: image) },
+            photoSize: image.size,
+            showsCompositionGrid: showsCompositionGrid,
             onZoomStarted: onZoomStarted,
             onZoomEnded: onZoomEnded,
             onSingleTap: onSingleTap,
@@ -262,6 +327,7 @@ private struct ZoomableImage: View {
 /// swipe-up info gesture on one coordinated gesture surface.
 private struct LivePhotoZoomView: View {
     let livePhoto: PHLivePhoto
+    var showsCompositionGrid = false
     var onZoomStarted: (() -> Void)?
     var onZoomEnded: ((CGFloat) -> Void)?
     var onSingleTap: (() -> Void)?
@@ -274,6 +340,8 @@ private struct LivePhotoZoomView: View {
                 view.livePhoto = livePhoto
                 return view
             },
+            photoSize: livePhoto.size,
+            showsCompositionGrid: showsCompositionGrid,
             updateContent: { (view: PHLivePhotoView) in
                 if view.livePhoto !== livePhoto { view.livePhoto = livePhoto }
             },

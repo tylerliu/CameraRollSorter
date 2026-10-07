@@ -11,6 +11,7 @@ struct PhotoPreviewView: View {
     var showsLivePhoto: Bool = true
     var onClick: (() -> Void)? = nil
     var isCurrent = true
+    var showsCompositionGrid = false
     @Binding var zoomScale: CGFloat
 
     @State private var magnifyOrigin: CGFloat?
@@ -44,6 +45,15 @@ struct PhotoPreviewView: View {
                         }
                     }
                     .frame(width: fittedSize.width * zoomScale, height: fittedSize.height * zoomScale)
+                    .overlay {
+                        if showsCompositionGrid, image != nil || livePhoto != nil {
+                            CompositionGrid()
+                                .stroke(.black.opacity(0.45), lineWidth: 2)
+                                .overlay { CompositionGrid().stroke(.white.opacity(0.8), lineWidth: 1) }
+                                .allowsHitTesting(false)
+                                .accessibilityHidden(true)
+                        }
+                    }
                     .offset(pan)
                     if showSpinner { ProgressView() }
                 }
@@ -186,6 +196,23 @@ private struct LivePhotoPlayer: NSViewRepresentable {
     static func dismantleNSView(_ view: PHLivePhotoView, coordinator: ()) {
         view.stopPlayback()
         view.livePhoto = nil
+    }
+}
+#endif
+
+#if os(macOS)
+private struct CompositionGrid: Shape {
+    func path(in rect: CGRect) -> Path {
+        Path { path in
+            for fraction in [CGFloat(1) / 3, CGFloat(2) / 3] {
+                let x = rect.minX + rect.width * fraction
+                let y = rect.minY + rect.height * fraction
+                path.move(to: CGPoint(x: x, y: rect.minY))
+                path.addLine(to: CGPoint(x: x, y: rect.maxY))
+                path.move(to: CGPoint(x: rect.minX, y: y))
+                path.addLine(to: CGPoint(x: rect.maxX, y: y))
+            }
+        }
     }
 }
 #endif
